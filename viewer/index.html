@@ -1,0 +1,266 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Overture POI Coverage</title>
+<link rel="stylesheet" href="https://unpkg.com/maplibre-gl@5.24.0/dist/maplibre-gl.css">
+<script src="https://unpkg.com/maplibre-gl@5.24.0/dist/maplibre-gl.js"></script>
+<script src="https://unpkg.com/pmtiles@4.5.0/dist/pmtiles.js"></script>
+<style>
+  :root { --bg: #fff; --fg: #1d2330; --muted: #6b7280; --line: #e5e7eb; --panel: rgba(255,255,255,.94); }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) { --bg: #111418; --fg: #e8eaed; --muted: #9aa0a6; --line: #2c3138; --panel: rgba(22,25,30,.94); }
+  }
+  :root[data-theme="dark"] { --bg: #111418; --fg: #e8eaed; --muted: #9aa0a6; --line: #2c3138; --panel: rgba(22,25,30,.94); }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg);
+    font: 13px/1.45 system-ui, -apple-system, "Segoe UI", "Malgun Gothic", sans-serif; }
+  #map { position: absolute; inset: 0; }
+  .panel { position: absolute; top: 12px; left: 12px; width: 280px; max-width: calc(100vw - 48px);
+    background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px;
+    box-shadow: 0 4px 16px rgba(0,0,0,.12); }
+  .panel h1 { font-size: 15px; margin: 0 0 2px; }
+  .panel .sub { color: var(--muted); font-size: 12px; margin-bottom: 10px; }
+  label { display: block; font-size: 12px; color: var(--muted); margin: 8px 0 4px; }
+  select { width: 100%; padding: 5px 6px; border-radius: 6px; border: 1px solid var(--line);
+    background: var(--bg); color: var(--fg); font: inherit; }
+  .legend { margin-top: 8px; }
+  .ramp { height: 10px; border-radius: 3px; }
+  .ramp-labels { display: flex; justify-content: space-between; color: var(--muted); font-size: 11px; margin-top: 2px; }
+  .swatches { display: grid; grid-template-columns: 1fr 1fr; gap: 3px 10px; font-size: 12px; }
+  .swatches span::before { content: ""; display: inline-block; width: 9px; height: 9px; border-radius: 50%;
+    margin-right: 5px; background: var(--c); vertical-align: -1px; }
+  #hover { margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--line); font-size: 12px; min-height: 18px; }
+  #hover b { font-variant-numeric: tabular-nums; }
+  .zoomhint { color: var(--muted); font-size: 11px; margin-top: 6px; }
+  .maplibregl-popup-content { background: var(--panel); color: var(--fg); max-width: 340px; font-size: 12px; }
+  .maplibregl-popup-tip { border-top-color: var(--panel) !important; border-bottom-color: var(--panel) !important; }
+  .pop h3 { margin: 0 0 4px; font-size: 14px; }
+  .pop table { border-collapse: collapse; width: 100%; }
+  .pop td { padding: 2px 4px; vertical-align: top; border-top: 1px solid var(--line); word-break: break-all; }
+  .pop td:first-child { color: var(--muted); white-space: nowrap; width: 1%; }
+  .pop code { font-size: 11px; }
+  .pop button { font: inherit; font-size: 11px; padding: 1px 6px; margin-left: 4px; cursor: pointer; }
+</style>
+</head>
+<body>
+<div id="map"></div>
+<div class="panel">
+  <h1>Overture POI 커버리지</h1>
+  <div class="sub" id="release">places · 격자 z0–12, 개별 POI z14+</div>
+  <label for="metric">격자 색상 기준</label>
+  <select id="metric"></select>
+  <div class="legend" id="legend"></div>
+  <label for="basemap">배경지도</label>
+  <select id="basemap">
+    <option value="positron">밝게 (OpenFreeMap Positron)</option>
+    <option value="dark">어둡게 (OpenFreeMap Dark)</option>
+  </select>
+  <div id="hover">격자 위에 마우스를 올리면 통계를 보여줘요.</div>
+  <div class="zoomhint">z14부터 개별 POI, z15부터 이름이 보여요. 마우스를 올리면 상세가 뜨고, 클릭하면 고정돼요.</div>
+</div>
+<script>
+const RELEASE = "2026-10-21.0";
+const GRID_URL = "pmtiles://" + new URL("../out/poi_grid.pmtiles", location.href).href;
+const PLACES_URL = `pmtiles://https://overturemaps-extras-us-west-2.s3.us-west-2.amazonaws.com/tiles/${RELEASE}/places.pmtiles`;
+const GRID_MAXZOOM = 12;
+
+const protocol = new pmtiles.Protocol();
+maplibregl.addProtocol("pmtiles", protocol.tile);
+
+const RAMP = ["#fff5d6", "#fdd38a", "#f99d4c", "#e5603a", "#b52b4b", "#6a1559"];
+const SOURCE_COLORS = { meta: "#3b82f6", foursquare: "#e5603a", alltheplaces: "#10b981", microsoft: "#8b5cf6" };
+let datasets = {};  // ds0 -> 데이터셋 이름 (격자 메타데이터에서 읽음)
+
+// 한 칸의 면적이 줌마다 4배씩 줄어서, z12 기준 구간값을 줌에 맞춰 늘린다.
+const COUNT_STOPS_Z12 = [1, 4, 15, 60, 250, 1000];
+function countColor() {
+  const byZoom = [];
+  for (const z of [0, 3, 6, 9, 12]) {
+    const k = Math.pow(4, GRID_MAXZOOM - z);
+    const inner = ["interpolate", ["linear"], ["ln", ["get", "n"]]];
+    COUNT_STOPS_Z12.forEach((s, i) => inner.push(Math.log(s * k), RAMP[i]));
+    byZoom.push(z, inner);
+  }
+  return ["interpolate", ["linear"], ["zoom"], ...byZoom];
+}
+function pctColor(key) {
+  const e = ["interpolate", ["linear"], ["get", key]];
+  [0, 20, 40, 60, 80, 100].forEach((v, i) => e.push(v, RAMP[i]));
+  return e;
+}
+
+function metrics() {
+  const m = [
+    { id: "n", label: "POI 수 (밀도)", color: countColor, legend: { ramp: true, labels: ["적음", "많음"] } },
+    { id: "conf", label: "평균 신뢰도 (confidence)", color: () => pctColor("conf"), legend: { ramp: true, labels: ["0", "0.5", "1.0"] } },
+    { id: "ko", label: "한글 이름 비율", color: () => pctColor("ko"), legend: { ramp: true, labels: ["0%", "50%", "100%"] } },
+  ];
+  for (const [k, name] of Object.entries(datasets)) {
+    m.push({ id: k, label: `출처 비율: ${name}`, color: () => pctColor(k), legend: { ramp: true, labels: ["0%", "50%", "100%"] } });
+  }
+  return m;
+}
+
+function styleUrl(name) { return `https://tiles.openfreemap.org/styles/${name}`; }
+
+const map = new maplibregl.Map({
+  container: "map",
+  style: styleUrl(matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "positron"),
+  center: [127.5, 36.3], zoom: 5.5, hash: true,
+});
+map.addControl(new maplibregl.NavigationControl(), "top-right");
+map.addControl(new maplibregl.ScaleControl(), "bottom-right");
+document.getElementById("basemap").value = matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "positron";
+
+function firstSymbolLayer() {
+  return map.getStyle().layers.find(l => l.type === "symbol")?.id;
+}
+
+function addOverlays() {
+  if (!map.getSource("grid")) {
+    map.addSource("grid", { type: "vector", url: GRID_URL, maxzoom: GRID_MAXZOOM });
+    map.addSource("places", { type: "vector", url: PLACES_URL });
+  }
+  const before = firstSymbolLayer();
+  map.addLayer({
+    id: "grid", type: "fill", source: "grid", "source-layer": "grid",
+    paint: {
+      "fill-color": currentMetric().color(),
+      "fill-opacity": ["interpolate", ["linear"], ["zoom"], 0, 0.8, 12, 0.7, 13.5, 0.35, 14.5, 0],
+    },
+  }, before);
+  map.addLayer({
+    id: "places", type: "circle", source: "places", "source-layer": "place", minzoom: 14,
+    paint: {
+      "circle-radius": ["interpolate", ["linear"], ["zoom"], 14, 2.5, 18, 6],
+      "circle-color": sourceColorExpr(),
+      "circle-opacity": ["interpolate", ["linear"], ["to-number", ["get", "confidence"]], 0, 0.35, 0.6, 0.9],
+      "circle-stroke-width": 0.5, "circle-stroke-color": "#fff",
+    },
+  });
+  const dark = document.getElementById("basemap").value === "dark";
+  map.addLayer({
+    id: "places-label", type: "symbol", source: "places", "source-layer": "place", minzoom: 15,
+    layout: {
+      "text-field": ["get", "@name"],
+      "text-font": ["Noto Sans Regular"],
+      "text-size": ["interpolate", ["linear"], ["zoom"], 15, 10, 18, 12],
+      "text-anchor": "left", "text-offset": [0.6, 0], "text-max-width": 8,
+      "text-optional": true,
+      // 겹칠 때는 신뢰도가 높은 POI의 이름을 먼저 보여준다.
+      "symbol-sort-key": ["-", 1, ["to-number", ["get", "confidence"], 0]],
+    },
+    paint: {
+      "text-color": dark ? "#e8eaed" : "#2b3140",
+      "text-halo-color": dark ? "#111418" : "#ffffff",
+      "text-halo-width": 1.2,
+    },
+  });
+}
+
+// 공식 타일은 sources를 JSON 문자열로 담고 있고 스타일 표현식으로는 파싱할 수 없어서,
+// 출처는 (소문자로 바꾼) 문자열에 이름이 들어 있는지로 판정한다. 앞에 있는 출처가 우선한다.
+function sourceColorExpr() {
+  const cases = ["case"];
+  for (const [k, c] of Object.entries(SOURCE_COLORS)) cases.push(["in", k, ["downcase", ["to-string", ["get", "sources"]]]], c);
+  cases.push("#6b7280");
+  return cases;
+}
+
+let metricId = "n";
+function currentMetric() { return metrics().find(m => m.id === metricId) || metrics()[0]; }
+
+function renderControls() {
+  const sel = document.getElementById("metric");
+  sel.innerHTML = metrics().map(m => `<option value="${m.id}">${m.label}</option>`).join("");
+  sel.value = metricId;
+  renderLegend();
+}
+function renderLegend() {
+  const m = currentMetric();
+  const sources = Object.entries(SOURCE_COLORS).map(([k, c]) => `<span style="--c:${c}">${k}</span>`).join("");
+  document.getElementById("legend").innerHTML =
+    `<div class="ramp" style="background:linear-gradient(90deg,${RAMP.join(",")})"></div>
+     <div class="ramp-labels">${m.legend.labels.map(l => `<span>${l}</span>`).join("")}</div>
+     <label>개별 POI 색 (출처)</label><div class="swatches">${sources}<span style="--c:#6b7280">기타</span></div>`;
+}
+
+document.getElementById("metric").addEventListener("change", e => {
+  metricId = e.target.value;
+  map.setPaintProperty("grid", "fill-color", currentMetric().color());
+  renderLegend();
+});
+document.getElementById("basemap").addEventListener("change", e => {
+  map.setStyle(styleUrl(e.target.value));
+  map.once("style.load", addOverlays);
+});
+
+map.on("load", async () => {
+  try {
+    const meta = await new pmtiles.PMTiles(GRID_URL.replace("pmtiles://", "")).getMetadata();
+    datasets = JSON.parse(meta.datasets || "{}");
+  } catch (e) { console.warn("grid metadata", e); }
+  renderControls();
+  addOverlays();
+});
+
+const hover = document.getElementById("hover");
+map.on("mousemove", "grid", e => {
+  const p = e.features[0].properties;
+  const ds = Object.entries(datasets).map(([k, n]) => `${n} ${p[k]}%`).join(" · ");
+  hover.innerHTML = `POI <b>${p.n.toLocaleString()}</b>개 · 평균 신뢰도 <b>${(p.conf / 100).toFixed(2)}</b> · 한글 이름 <b>${p.ko}%</b><br><span style="color:var(--muted)">${ds}</span>`;
+});
+map.on("mouseleave", "grid", () => { hover.textContent = "격자 위에 마우스를 올리면 통계를 보여줘요."; });
+
+function parse(v) { try { return typeof v === "string" ? JSON.parse(v) : v; } catch { return v; } }
+function esc(s) { return String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])); }
+
+function placeHtml(p) {
+  const names = parse(p.names) || {};
+  const tax = parse(p.taxonomy) || {};
+  const sources = parse(p.sources) || [];
+  const addr = (parse(p.addresses) || [])[0] || {};
+  const ko = names.common?.ko;
+  const rows = [
+    ["GERS ID", `<code>${esc(p.id)}</code><button data-copy="${esc(p.id)}">복사</button>`],
+    ["분류", esc([p.basic_category, tax.primary].filter(Boolean).join(" / "))],
+    ["신뢰도", esc(p.confidence == null ? "" : Number(p.confidence).toFixed(2))],
+    ["상태", esc(p.operating_status)],
+    ["주소", esc([addr.freeform, addr.locality, addr.country].filter(Boolean).join(", "))],
+    ["출처", sources.map(s => `${esc(s.resource || s.dataset)} <span style="color:var(--muted)">${esc(s.version || s.update_time || "")}</span>`).join("<br>")],
+    ["전화", esc((parse(p.phones) || []).join(", "))],
+    ["웹", (parse(p.websites) || []).map(w => `<a href="${esc(w)}" target="_blank" rel="noopener">${esc(w)}</a>`).join("<br>")],
+  ].filter(r => r[1]);
+  return `<div class="pop"><h3>${esc(names.primary || p["@name"])}</h3>${ko && ko !== names.primary ? `<div>${esc(ko)}</div>` : ""}
+     <table>${rows.map(([k, v]) => `<tr><td>${k}</td><td>${v}</td></tr>`).join("")}</table></div>`;
+}
+
+// hover하면 상세를 바로 보여주고, 클릭하면 고정해서 링크·복사 버튼을 쓸 수 있게 한다.
+const hoverPopup = new maplibregl.Popup({ maxWidth: "340px", closeButton: false, closeOnClick: false, offset: 8 });
+let hoverId = null;
+map.on("mousemove", "places", e => {
+  const f = e.features[0];
+  map.getCanvas().style.cursor = "pointer";
+  if (f.properties.id === hoverId) return;
+  hoverId = f.properties.id;
+  hoverPopup.setLngLat(f.geometry.coordinates).setHTML(placeHtml(f.properties)).addTo(map);
+});
+map.on("mouseleave", "places", () => {
+  map.getCanvas().style.cursor = "";
+  hoverId = null;
+  hoverPopup.remove();
+});
+map.on("click", "places", e => {
+  const f = e.features[0];
+  hoverPopup.remove();
+  hoverId = null;
+  new maplibregl.Popup({ maxWidth: "340px", offset: 8 }).setLngLat(f.geometry.coordinates).setHTML(placeHtml(f.properties)).addTo(map);
+});
+document.addEventListener("click", e => {
+  const id = e.target.dataset?.copy;
+  if (id) navigator.clipboard?.writeText(id).then(() => { e.target.textContent = "복사됨"; });
+});
+</script>
+</body>
+</html>

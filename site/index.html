@@ -1,0 +1,593 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>서울 음식점 나이 지도</title>
+<link rel="stylesheet" href="https://unpkg.com/maplibre-gl@5.24.0/dist/maplibre-gl.css">
+<script src="https://unpkg.com/maplibre-gl@5.24.0/dist/maplibre-gl.js"></script>
+<script src="https://unpkg.com/pmtiles@4.5.0/dist/pmtiles.js"></script>
+<script src="https://unpkg.com/@protomaps/basemaps@5.7.2/dist/basemaps.js"></script>
+<style>
+  :root { --bg: #f2f0eb; --fg: #1f1a16; --muted: #7d766d; --line: #ddd8cf; --panel: rgba(250,248,244,.96); --accent: #8a5a2b; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg);
+    font: 13px/1.45 system-ui, -apple-system, "Segoe UI", "Malgun Gothic", sans-serif; }
+  #map { position: absolute; inset: 0; }
+  .panel { position: absolute; top: 12px; left: 12px; width: 300px; max-width: calc(100vw - 48px);
+    max-height: calc(100vh - 24px); overflow-y: auto; box-sizing: border-box;
+    background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px;
+    box-shadow: 0 2px 12px rgba(60,45,30,.12); }
+  .panel h1 { font-size: 16px; margin: 0 0 2px; display: flex; align-items: center; gap: 6px; }
+  /* 제목 옆 정보 아이콘: hover/focus 때만 안내 문구 */
+  .info { position: relative; display: inline-flex; color: var(--muted); cursor: pointer; }
+  .info svg { width: 15px; height: 15px; }
+  .info .tip { display: none; position: fixed; z-index: 10; width: 260px; padding: 8px 10px;
+    background: var(--fg); color: var(--bg); border-radius: 6px; font-size: 11px; font-weight: 400; line-height: 1.5; }
+  .info .tip p { margin: 0; } .info .tip p + p { margin-top: 6px; }
+  .info:hover .tip, .info:focus .tip, .info:focus-within .tip { display: block; }
+  .fold { margin-left: auto; display: inline-flex; padding: 2px; border: 0; background: none; color: var(--muted); cursor: pointer; border-radius: 4px; }
+  .fold:hover { color: var(--fg); background: var(--line); }
+  .fold svg { width: 16px; height: 16px; transition: transform .15s; }
+  .panel.folded .fold svg { transform: rotate(180deg); }
+  .panel.folded #panel-body { display: none; }
+  .panel.folded h1 { margin: 0; }
+  .sub { color: var(--muted); font-size: 12px; margin-bottom: 10px; }
+  .note { color: var(--muted); font-size: 11px; margin-top: 8px; }
+
+  /* 기간 선택: 히스토그램 + 양손잡이 슬라이더 */
+  .period { margin-top: 12px; }
+  .period-head { display: flex; justify-content: space-between; align-items: baseline; }
+  .period-head b { font-size: 15px; font-variant-numeric: tabular-nums; }
+  .period-head span { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+  #hist { display: flex; align-items: flex-end; gap: 1px; height: 44px; margin-top: 6px; }
+  #hist div { flex: 1; min-height: 1px; border-radius: 1px 1px 0 0; opacity: .25; }
+  #hist div.on { opacity: 1; }
+  .range { position: relative; height: 22px; }
+  .range input { position: absolute; inset: 0; width: 100%; margin: 0; background: none; pointer-events: none; -webkit-appearance: none; appearance: none; }
+  .range input::-webkit-slider-thumb { pointer-events: auto; -webkit-appearance: none; width: 14px; height: 14px; border-radius: 50%;
+    background: var(--fg); border: 2px solid var(--bg); cursor: pointer; margin-top: -5px; }
+  .range input::-moz-range-thumb { pointer-events: auto; width: 12px; height: 12px; border-radius: 50%; background: var(--fg); border: 2px solid var(--bg); cursor: pointer; }
+  .range input::-webkit-slider-runnable-track { height: 4px; background: transparent; }
+  .range .track { position: absolute; left: 0; right: 0; top: 9px; height: 4px; border-radius: 2px; background: var(--line); }
+  .range .fill { position: absolute; top: 9px; height: 4px; border-radius: 2px; background: var(--fg); }
+  .axis { display: flex; justify-content: space-between; color: var(--muted); font-size: 10px; font-variant-numeric: tabular-nums; }
+  .chips { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 8px; }
+  .chips button { font: inherit; font-size: 11px; padding: 2px 8px; border-radius: 10px; border: 1px solid var(--line);
+    background: transparent; color: var(--fg); cursor: pointer; }
+  .chips button[aria-pressed="true"] { border-color: var(--fg); }
+  .unknown { display: flex; align-items: center; gap: 6px; margin-top: 8px; font-size: 12px; color: var(--muted); cursor: pointer; }
+  .unknown[hidden] { display: none; }
+
+  #detail { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--line); font-size: 12px; }
+  #detail .hint { color: var(--muted); }
+  #detail .close { float: right; font: inherit; font-size: 11px; color: var(--muted); background: none; border: 0; cursor: pointer; padding: 0; }
+  .maplibregl-popup-content { background: var(--panel); color: var(--fg); font-size: 12px; padding: 10px 12px; }
+  .maplibregl-popup-tip { border-top-color: var(--panel) !important; border-bottom-color: var(--panel) !important; }
+  .maplibregl-popup-close-button { color: var(--muted); }
+  .pop h3 { margin: 0 0 2px; font-size: 14px; }
+  .pop h3 small { color: var(--muted); font-weight: 400; font-size: 11px; margin-left: 4px; }
+  .pop .addr { color: var(--muted); margin-bottom: 6px; }
+  .pop .station { margin: -2px 0 8px; font-size: 12px; } .pop .station span { color: var(--muted); }
+  .pop .station::before { content: ""; display: inline-block; width: 8px; height: 8px; margin-right: 6px; border-radius: 50%;
+    border: 2px solid var(--fg); background: var(--bg); vertical-align: -1px; }
+  .pop ul { list-style: none; margin: 0; padding: 0; }
+
+  .pop li { display: grid; grid-template-columns: 10px 1fr auto; gap: 6px; align-items: baseline;
+    padding: 3px 0; border-top: 1px solid var(--line); }
+  .pop li.out { opacity: .35; }
+  .pop li .dot { width: 8px; height: 8px; border-radius: 2px; background: var(--c); align-self: center; }
+  .pop li .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .pop li .sub { color: var(--muted); font-size: 11px; display: block; margin: 0; }
+  .pop li .meta { font-size: 11px; text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .pop li .meta small { color: var(--muted); display: block; }
+  .pop .badge { font-size: 10px; border: 1px solid var(--accent); color: var(--accent); border-radius: 3px; padding: 0 3px; margin-left: 4px; }
+  .pop .badge.chain { border-color: var(--muted); color: var(--muted); }
+  .pop .badge.bk, .guide-card .badge.bk { border-color: #2f6db5; color: #2f6db5; }  /* 백년가게 */
+  .pop .more { color: var(--muted); font-size: 11px; padding-top: 4px; border-top: 1px solid var(--line); }
+  .guide { position: fixed; inset: 0; z-index: 20; display: grid; place-items: center; padding: 16px; background: rgba(31,26,22,.35); }
+  .guide[hidden] { display: none; }
+  .guide-card { position: relative; width: min(620px, 100%); max-height: calc(100vh - 32px); overflow-y: auto; box-sizing: border-box;
+    background: var(--panel); border-radius: 12px; padding: 20px 24px; box-shadow: 0 10px 40px rgba(31,26,22,.25); font-size: 13px; line-height: 1.6; }
+  .guide-card h2 { margin: 0 0 6px; font-size: 18px; }
+  .guide-card h3 { margin: 18px 0 6px; font-size: 14px; }
+  .guide-card .lead { margin: 0 0 8px; }
+  .guide-close { position: absolute; top: 12px; right: 14px; border: 0; background: none; font-size: 16px; color: var(--muted); cursor: pointer; }
+  .guide-scale { display: grid; grid-template-columns: repeat(7, 1fr); gap: 2px; font-size: 11px; color: var(--muted); text-align: center; }
+  .guide-scale div { height: 10px; border-radius: 2px; }
+  .guide-card ol, .guide-card ul { margin: 0; padding-left: 20px; } .guide-card li { margin: 4px 0; }
+  .guide-card dl { display: grid; grid-template-columns: max-content 1fr; gap: 6px 12px; margin: 0; }
+  .guide-card dt { font-weight: 600; white-space: nowrap; } .guide-card dd { margin: 0; color: var(--fg); }
+  .guide-card .k-name { font-weight: 600; } .guide-card .k-more { color: #9a948b; font-weight: 400; }
+  .guide-card .badge { font-size: 10px; border: 1px solid var(--accent); color: var(--accent); border-radius: 3px; padding: 0 3px; font-weight: 400; }
+  .guide-card .badge.chain { border-color: var(--muted); color: var(--muted); }
+  .guide-card .closing { margin: 10px 0 6px; }
+  .guide-card .report a { color: #2f6db5; }
+  .guide-card .src { margin-top: 16px; color: var(--muted); font-size: 11px; }
+  @media (max-width: 520px) { .guide-card dl { grid-template-columns: 1fr; } .guide-card dt { margin-top: 6px; } }
+</style>
+</head>
+<body>
+<div id="map"></div>
+<div class="guide" id="guide" hidden role="dialog" aria-modal="true" aria-labelledby="guide-title">
+  <div class="guide-card">
+    <button class="guide-close" id="guide-close" type="button" aria-label="닫기">✕</button>
+    <h2 id="guide-title">자료 및 방법</h2>
+    <p class="lead">본 지도는 서울특별시에서 영업 중인 일반음식점 약 11만 8천 개소를 개업 연도에 따라 구분하여 나타낸 것입니다. 색상은 갈색 계열일수록 개업 연도가 이르고, 녹색 계열일수록 늦음을 의미합니다.</p>
+    <div class="guide-scale" id="guide-scale"></div>
+
+    <h3>1. 자료</h3>
+    <ul class="notes">
+      <li>행정안전부 지방행정 인허가 자료(식품_일반음식점) 중 영업 상태가 '영업/정상'이고 좌표가 존재하는 업소를 분석 대상으로 하였다(<span id="guide-date"></span> 기준).</li>
+      <li>소상공인시장진흥공단 상가(상권)정보의 2019~2025년 연말 시점 자료 및 2026년 6월 자료를 업소의 존재 시점 확인에 활용하였습니다.</li>
+      <li>소상공인시장진흥공단 백년가게 지정 목록(2022년, 2026년)을 업력 검증 자료로 활용하였습니다.</li>
+      <li>건물 외곽선, 지하철역 위치 및 배경지도는 Overture Maps 자료를 사용하였습니다.</li>
+    </ul>
+
+    <h3>2. 개업 연도 추정 방법</h3>
+    <p>개업 연도는 다음 우선순위에 따라 결정하였습니다.</p>
+    <ol class="steps">
+      <li><b>백년가게 지정 업소.</b> 백년가게는 업력 30년 이상이 공식 확인된 업소이므로 최우선으로 적용하였습니다. 업소가 이전한 경우 반경 1km 이내 동일 상호의 인허가 기록(폐업 기록 포함)을 동일 업소로 간주하고, 그중 가장 이른 인허가 연도를 개업 연도로 하였습니다. 연계 가능한 기록이 없는 경우에는 지정 요건에 따라 30년 이상으로 표기하였습니다.</li>
+      <li><b>영업자 변경 흔적이 확인되는 업소.</b> 영업자 지위승계 시 인허가일자가 승계되므로, 인허가 연도가 실제 현 업소의 개업 시점과 다를 수 있습니다. 상가정보 연말 자료에 처음 등장한 연도가 인허가 연도보다 5년 이상 늦고, 직전 연도 자료에서 동일 위치(15m 이내)의 다른 음식점이 소멸한 것이 확인되는 경우 최초 등장 연도를 개업 연도로 하였습니다. 두 연도의 차이가 30년 이상인 경우에는 이 조건 없이 적용하였습니다.</li>
+      <li><b>그 외 업소.</b> 인허가 연도를 그대로 사용하였습니다. 이는 현 업소의 개업 연도라기보다 해당 위치에서 음식점 영업이 시작된 연도에 가깝습니다.</li>
+    </ol>
+
+    <h3>3. 표기 방식</h3>
+    <dl class="keys">
+      <dt>건물 색</dt><dd>한 건물에 복수의 업소가 입지한 경우, 선택 기간 내 개업 연도가 가장 이른 업소를 기준으로 표시하였습니다.</dd>
+      <dt><span class="k-name">업소명</span> <span class="k-more">+3</span></dt><dd>동일 건물 내 선택 기간에 해당하는 업소가 3개소 더 있음을 의미합니다. 둘째 줄의 숫자는 개업 연도입니다.</dd>
+      <dt><span class="badge bk">백년가게</span></dt><dd>백년가게 지정 업소입니다.</dd>
+      <dt><span class="badge chain">체인</span></dt><dd>지점명을 제외한 상호가 서울 내 3개소 이상 확인되는 업소입니다. 체인 지점은 기존 업소의 인허가를 승계하는 경우가 많아, 표시된 연도가 실제 입점 시점보다 이를 수 있습니다.</dd>
+      <dt><span class="badge">전통업소</span></dt><dd>전통음식점으로 지정된 업소입니다.</dd>
+      <dt>2022 · 인허가 2007</dt><dd>인허가 연도는 2007년이나, 영업자 변경 흔적에 따라 2022년으로 추정한 경우입니다.</dd>
+      <dt>30년+ · 인허가 2019</dt><dd>백년가게 지정 업소이나 이전 기록이 확인되지 않아 업력 30년 이상으로만 표기한 경우입니다.</dd>
+    </dl>
+
+
+    <h3>4. 한계</h3>
+    <ul class="notes">
+      <li>상가정보 자료가 2019년부터 제공되므로 그 이전에 발생한 영업자 변경은 반영되지 않습니다.</li>
+      <li>신규 인허가 업소의 약 30%가 상가정보에 1년 이상 늦게 반영되어, 추정 연도가 실제 개업 시점보다 늦을 수 있습니다.</li>
+      <li>오추정을 줄이기 위해 판단이 불분명한 경우 인허가 연도를 유지하였으며, 이에 따라 일부 승계 업소는 실제보다 이른 연도로 표시될 수 있습니다.</li>
+      <li>실제로는 폐업한 업소가 표시되거나, 표시된 개업 연도가 실제와 다른 경우가 적지 않습니다.</li>
+    </ul>
+    <p class="closing">이는 지도 서비스가 피하기 어려운 숙명이기도 합니다. 데이터는 보여야 비로소 의미를 가지며, 잘못된 데이터가 드러나는 것은 곧 이를 바로잡을 기회를 얻는 것이라고 생각합니다. 이 지도가 공공 데이터의 개선으로 이어지는 계기가 된다면, 그것으로 충분히 성공했다고 생각합니다. 수정이 필요한 데이터가 있다면 아래 각 출처에 개선을 제보해 주시기 바랍니다.</p>
+    <ul class="report">
+      <li><b>영업 상태·인허가일자</b> — <a href="https://www.data.go.kr/data/15045016/fileData.do" target="_blank" rel="noopener">공공데이터포털 「행정안전부_식품_일반음식점」</a>의 데이터 개선요청·오류신고</li>
+      <li><b>상가(상권)정보</b> — <a href="https://www.data.go.kr/data/15083033/fileData.do" target="_blank" rel="noopener">공공데이터포털 「소상공인시장진흥공단_상가(상권)정보」</a>의 데이터 개선요청·오류신고</li>
+      <li><b>백년가게</b> — <a href="https://www.data.go.kr/data/15132695/fileData.do" target="_blank" rel="noopener">공공데이터포털 「소상공인시장진흥공단_전국 백년가게 지정리스트 현황 정보」</a>의 데이터 개선요청·오류신고</li>
+      <li><b>건물·지하철역·배경지도</b> — <a href="https://github.com/OvertureMaps/data/issues" target="_blank" rel="noopener">Overture Maps 데이터 이슈</a>, 또는 원천 자료인 <a href="https://www.openstreetmap.org/" target="_blank" rel="noopener">OpenStreetMap</a>에서 직접 수정</li>
+    </ul>
+
+    <p class="src">자료: 행정안전부 지방행정 인허가(식품_일반음식점) · 소상공인시장진흥공단 상가(상권)정보(2019~2026) · 소상공인시장진흥공단 백년가게 지정 목록 · Overture Maps Foundation</p>
+  </div>
+</div>
+<div class="panel">
+  <h1><span>서울 음식점 나이 지도</span>
+    <span class="info" tabindex="0" aria-label="자료 및 방법">
+      <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><circle cx="10" cy="10" r="8"/><path d="M10 9v5M10 6.2v.1" stroke-linecap="round"/></svg>
+      <span class="tip" role="tooltip"><p>건물 색은 해당 건물에 입지한 음식점 중 가장 이른 개업 연도를 나타냅니다.</p><p>개업 연도는 백년가게 지정 정보, 영업자 변경 흔적, 인허가일자의 순으로 결정하였습니다.</p><p>아이콘을 누르면 자료와 추정 방법에 대한 설명을 볼 수 있습니다.</p></span>
+    </span>
+    <button class="fold" id="fold" aria-expanded="true" aria-controls="panel-body" title="패널 접기">
+      <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M5 12.5 10 7.5l5 5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    </button>
+  </h1>
+  <div id="panel-body">
+  <div class="sub">영업 중인 일반음식점 · 인허가일자 기준 · <span id="base-date"></span></div>
+  <div class="period">
+    <div class="period-head"><b id="period-label"></b><span id="period-count"></span></div>
+    <div id="hist" aria-hidden="true"></div>
+    <div class="range">
+      <div class="track"></div><div class="fill" id="range-fill"></div>
+      <input type="range" id="from" aria-label="시작 연도">
+      <input type="range" id="to" aria-label="끝 연도">
+    </div>
+    <div class="axis" id="axis"></div>
+    <div class="chips" id="chips"></div>
+    <label class="unknown" id="unknown-wrap" hidden><input type="checkbox" id="unknown" checked> 연도 미상 <span id="unknown-count"></span>곳 함께 보기</label>
+  </div>
+  <div id="detail"><div class="hint">건물에 마우스를 올리면 업소 목록이 표시되며, 클릭하면 이 영역에 전체 목록이 표시됩니다.</div></div>
+  </div>
+</div>
+<script>
+// 타일 소스: 로컬에서는 PMTiles 한 파일(Range 요청). 배포본은 build_site.py가 z/x/y 파일 폴더로 바꾼다(Pages는 Range 미지원)
+const tileSource = path => ({ url: "pmtiles://" + new URL(path, location.href).href });
+const BLDG = tileSource("data/bldg.pmtiles");
+const PTS = tileSource("data/pts.pmtiles");
+const HIST = "data/seoul_restaurants_hist.json";
+const DETAIL = "data/detail/";  // 건물별 음식점 목록: z16 타일 단위 JSON(타일 속성 k)
+const STATIONS = new URL("data/seoul_restaurants_stations.geojson", location.href).href;
+// 배경지도: Overture 데이터를 Protomaps basemaps(--overture)로 빌드한 서울 PMTiles
+const BASEMAP = { ...tileSource("data/basemap.pmtiles"),
+                  attribution: "© Overture Maps Foundation · © OpenStreetMap · Protomaps" };
+const MIN_YEAR = 1960, BASE_YEAR = 2026;  // MIN_YEAR 손잡이는 '그 이전 전부'를 뜻한다
+const BAEKNYEON_CAP = BASE_YEAR - 30;  // 백년가게(업력 30년 이상)인데 더 이른 기록이 없으면 이 연도로 올려 둔다
+
+const protocol = new pmtiles.Protocol();
+maplibregl.addProtocol("pmtiles", protocol.tile);
+
+// 팔레트: [이 연도 이하, 라벨, 색]. 바꿀 때는 여기만 고친다.
+// Paper & Ink: 노포는 갈색, 신규는 초록으로 회색 없이 잇는다. 채도는 높게, 지도에는 투명하게 칠해서 밝게 보이도록.
+const PALETTE = [
+  [1979, "~1979", "#6b3418"],
+  [1989, "80s", "#a24a1f"],
+  [1999, "90s", "#d26a2a"],
+  [2009, "00s", "#e3a431"],
+  [2019, "10s", "#a9b534"],
+  [2023, "20–23", "#5cb85a"],
+  [9999, "24–", "#1f9e57"],
+];
+const FILL_OPACITY = 0.38, POINT_OPACITY = 0.6;
+const UNKNOWN = "#bdb7ad";  // 인허가일자 미상
+const PAPER = "#f2f0eb";
+// 한 건물에 음식점이 여러 곳이면 같은 폴리곤이 겹쳐 그려진다. 투명하게 칠하면 겹친 수만큼 색이 진해지므로,
+// 종이 배경과 미리 섞은 불투명한 색으로 칠한다(투명도 a로 칠한 것과 같은 색).
+function mix(hex, a) {
+  const c = [1, 3, 5].map(i => parseInt(hex.slice(i, i + 2), 16)), p = [1, 3, 5].map(i => parseInt(PAPER.slice(i, i + 2), 16));
+  return "#" + c.map((v, i) => Math.round(p[i] + (v - p[i]) * a).toString(16).padStart(2, "0")).join("");
+}
+const yearColorAt = a => ["case", ["has", "y"],
+  ["step", ["get", "y"], mix(PALETTE[0][2], a), ...PALETTE.slice(0, -1).flatMap(([y], i) => [y + 1, mix(PALETTE[i + 1][2], a)])],
+  mix(UNKNOWN, a)];
+// 불투명도를 정확히 1로 두면 MapLibre가 불투명 렌더링 경로를 타서 타일 안 순서(오래된 가게가 위)를 지키지 않는다.
+const OPAQUE = 0.999;
+const eraColor = y => !y ? UNKNOWN : (PALETTE.find(([max]) => y <= max) || PALETTE[PALETTE.length - 1])[2];
+
+const PRESETS = [["전체", MIN_YEAR, BASE_YEAR], ["~1979", MIN_YEAR, 1979], ["80s", 1980, 1989], ["90s", 1990, 1999],
+                 ["00s", 2000, 2009], ["10s", 2010, 2019], ["2020~", 2020, BASE_YEAR]];
+let range = [MIN_YEAR, BASE_YEAR];
+let hist = {}, unknownCount = 0;
+const showUnknown = () => document.getElementById("unknown").checked;
+
+function yearFilter() {
+  const inRangeExpr = ["all", ["has", "y"], ["<=", ["get", "y"], range[1]]];
+  if (range[0] > MIN_YEAR) inRangeExpr.push([">=", ["get", "y"], range[0]]);
+  return showUnknown() && unknownCount > 0 ? ["any", ["!", ["has", "y"]], inRangeExpr] : inRangeExpr;
+}
+// 같은 건물의 음식점은 같은 폴리곤을 겹쳐 쓴다. 타일에 새로운 가게부터 오래된 가게 순으로 들어 있어서
+// (build_restaurant_tiles.py) 나중에 그려지는 오래된 가게가 맨 위에 온다. 그래서 정렬 키는 따로 두지 않는다.
+
+function baseStyle() {
+  const flavor = { ...basemaps.namedFlavor("light"), background: "#f2f0eb", earth: "#f2f0eb", buildings: "#e4e0d8",
+                   water: "#b9d3e3", park_a: "#d3e6c5", park_b: "#c6dfb4", wood_a: "#d3e6c5", wood_b: "#c6dfb4",
+                   scrub_a: "#d3e6c5", scrub_b: "#c6dfb4",
+                   zoo: "#dcd7e2", industrial: "#e4e0e8" };  // 녹지·수계는 건물 채색과 구분되게 조금 진하게. 군부대(zoo 색 공유)·공업지역은 물과 헷갈리지 않게 라일락
+  const layers = basemaps.layers("basemap", flavor, { lang: "ko" })
+    .filter(l => !/pois|landuse_pedestrian/.test(l.id));
+  return {
+    version: 8,
+    glyphs: "https://protomaps.github.io/basemaps-assets/fonts/{fontstack}/{range}.pbf",
+    sprite: "https://protomaps.github.io/basemaps-assets/sprites/v4/light",
+    sources: { basemap: { type: "vector", ...BASEMAP } },
+    layers,
+  };
+}
+
+const map = new maplibregl.Map({
+  container: "map", style: baseStyle(), center: [126.985, 37.565], zoom: 11.5, minZoom: 9, maxZoom: 19, hash: true,
+  maxBounds: [[126.76, 37.41], [127.19, 37.72]],  // 배경지도를 잘라 낸 영역(extract_basemap.py bbox). 바깥이 보이지 않게
+});
+map.addControl(new maplibregl.NavigationControl(), "top-right");
+map.addControl(new maplibregl.ScaleControl(), "bottom-right");
+
+map.on("load", () => {
+  map.addSource("pts", { type: "vector", ...PTS });  // z9 한 단계, 그 위로는 늘려 쓴다
+  map.addSource("bldg", { type: "vector", ...BLDG, attribution: "행정안전부 지방행정 인허가(일반음식점) · Overture Maps" });
+  const firstLabel = map.getStyle().layers.find(l => l.type === "symbol")?.id;
+  // 축소 시: 서울건물나이지도처럼 음식점마다 개업 연도 색의 점. z14부터 건물 채색으로 넘어간다.
+  map.addLayer({
+    id: "pts", type: "circle", source: "pts", "source-layer": "pt", maxzoom: 14.5, filter: yearFilter(),
+    paint: {
+      "circle-color": yearColorAt(POINT_OPACITY),
+      "circle-radius": ["interpolate", ["exponential", 1.6], ["zoom"], 9, 0.7, 12, 1.6, 14, 3.2],
+      "circle-opacity": ["interpolate", ["linear"], ["zoom"], 9, OPAQUE, 13.5, OPAQUE, 14.5, 0],
+    },
+  }, firstLabel);
+  map.addLayer({
+    id: "bldg", type: "fill", source: "bldg", "source-layer": "bldg", minzoom: 14, filter: yearFilter(),
+    paint: { "fill-color": yearColorAt(FILL_OPACITY), "fill-opacity": OPAQUE },
+  }, firstLabel);
+  map.addLayer({
+    id: "store", type: "circle", source: "bldg", "source-layer": "store", minzoom: 14, filter: yearFilter(),
+    paint: {
+      "circle-color": yearColorAt(POINT_OPACITY), "circle-opacity": OPAQUE,
+      "circle-radius": ["interpolate", ["linear"], ["zoom"], 14, 2, 17, ["+", 3, ["sqrt", ["get", "n"]]], 19, ["+", 5, ["*", 1.5, ["sqrt", ["get", "n"]]]]],
+      "circle-stroke-width": 0.5, "circle-stroke-color": "#f2f0eb",
+    },
+  });
+  addStations();
+  // 클릭으로 선택한 건물(또는 점) 강조
+  map.addLayer({ id: "sel", type: "line", source: "bldg", "source-layer": "bldg", minzoom: 14, filter: selectFilter(null),
+                 paint: { "line-color": "#1f1a16", "line-width": 2 } });
+  map.addLayer({ id: "sel-pt", type: "circle", source: "bldg", "source-layer": "store", minzoom: 14, filter: selectFilter(null),
+                 paint: { "circle-radius": 7, "circle-color": "rgba(0,0,0,0)", "circle-stroke-width": 2, "circle-stroke-color": "#1f1a16" } });
+  // 라벨: 건물마다 맨 위 가게 이름 하나 + 기간 안 나머지 수(작게) + 개업 연도.
+  // 기간 안 개수는 스타일 표현식으로 셀 수 없어서, 화면에 그려진 피처를 건물별로 묶어 GeoJSON으로 만든다(refreshLabels).
+  map.addSource("labels", { type: "geojson", data: { type: "FeatureCollection", features: [] } });
+  map.addLayer({
+    id: "labels", type: "symbol", source: "labels", minzoom: LABEL_Z,
+    layout: {
+      "text-field": ["format",
+        // 상호명만 굵게(글꼴 서버에 Bold가 없어 Medium), +N과 개업 연도는 같은 크기에 색만 다르게
+        ["get", "name"], { "text-font": ["literal", ["Noto Sans Medium"]] },
+        ["case", [">", ["get", "more"], 0], ["concat", " +", ["to-string", ["get", "more"]]], ""], { "text-color": "#9a948b" },
+        ["case", ["has", "y"], ["concat", "\n",
+          ["case", ["has", "b"], ["concat", "백년가게 · ",
+            ["case", ["all", ["==", ["get", "b"], 2], ["==", ["get", "y"], BAEKNYEON_CAP]], "30년+", ["to-string", ["get", "y"]]]],
+          ["to-string", ["get", "y"]]]], ""], { "text-color": "#8a6a3c" }],
+      "text-font": ["Noto Sans Regular"], "text-size": ["interpolate", ["linear"], ["zoom"], 16, 12, 19, 15],
+      "text-max-width": 100, "symbol-sort-key": ["get", "rank"],  // 상호명은 줄바꿈하지 않는다
+    },
+    // 개업 연도를 알 수 없는 가게만 이름을 회색으로 낮춘다.
+    paint: { "text-color": ["case", ["has", "y"], "#1f1a16", "#9a948b"],
+             "text-halo-color": "rgba(242,240,235,0.55)", "text-halo-width": 0.6 },  // 종이 톤 반투명 외곽선을 얇게
+  });
+  applyRange();
+  map.on("moveend", scheduleLabels);
+});
+
+// ---- 지하철역: z13부터, 건물 채색과 음식점 라벨 사이에 회색 글자 + 지하철 아이콘 ----
+const SUBWAY_ICON = `<svg xmlns="http://www.w3.org/2000/svg" width="36" height="36" viewBox="0 0 36 36">
+  <rect x="2" y="2" width="32" height="32" rx="8" fill="#7d776f"/>
+  <rect x="10" y="7" width="16" height="17" rx="4" fill="none" stroke="#fff" stroke-width="2.4"/>
+  <line x1="10" y1="16" x2="26" y2="16" stroke="#fff" stroke-width="2.4"/>
+  <circle cx="14" cy="20" r="1.4" fill="#fff"/><circle cx="22" cy="20" r="1.4" fill="#fff"/>
+  <path d="M13 24l-3 5M23 24l3 5" stroke="#fff" stroke-width="2.4" stroke-linecap="round"/></svg>`;
+async function addStations() {
+  const img = new Image();
+  img.src = "data:image/svg+xml;charset=utf-8," + encodeURIComponent(SUBWAY_ICON);
+  await img.decode();
+  if (!map.hasImage("subway")) map.addImage("subway", img, { pixelRatio: 2 });
+  map.addSource("stations", { type: "geojson", data: STATIONS });
+  map.addLayer({
+    id: "stations", type: "symbol", source: "stations", minzoom: 13,
+    layout: {
+      "icon-image": "subway", "icon-size": ["interpolate", ["linear"], ["zoom"], 13, 0.8, 17, 1],
+      // 아이콘은 다른 라벨과 겹쳐도 항상 그리고 남의 자리를 막지 않는다. 이름은 겹치면 빠진다
+      "icon-allow-overlap": true, "icon-ignore-placement": true,
+      "text-field": ["get", "name"], "text-font": ["Noto Sans Medium"],
+      "text-size": ["interpolate", ["linear"], ["zoom"], 13, 11, 17, 13],
+      "text-anchor": "top", "text-offset": [0, 1.1], "text-max-width": 100, "text-optional": true,
+    },
+    paint: { "text-color": "#8a857e", "text-halo-color": "rgba(242,240,235,0.8)", "text-halo-width": 1 },
+  }, map.getLayer("labels") ? "labels" : undefined);  // 건물 채색 위(가려지지 않게), 음식점 라벨 아래(겹치면 음식점이 먼저 자리를 잡는다)
+}
+
+// ---- 지도 읽는 법 (ⓘ 아이콘을 누르면 열린다) ----
+const guide = document.getElementById("guide");
+function openGuide() { guide.hidden = false; document.getElementById("guide-close").focus(); }
+function closeGuide() { guide.hidden = true; try { localStorage.setItem("guideSeen", "1"); } catch {} }
+document.querySelector(".info").addEventListener("click", openGuide);
+document.getElementById("guide-close").addEventListener("click", closeGuide);
+guide.addEventListener("click", e => { if (e.target === guide) closeGuide(); });
+document.addEventListener("keydown", e => { if (e.key === "Escape" && !guide.hidden) closeGuide(); });
+document.getElementById("guide-scale").innerHTML =
+  PALETTE.map(([, , c]) => `<div style="background:${c}"></div>`).join("") + PALETTE.map(([, l]) => `<span>${l}</span>`).join("");
+try { if (!localStorage.getItem("guideSeen")) openGuide(); } catch { openGuide(); }
+
+// ---- 정보 툴팁 위치 (fixed라 아이콘 기준으로 직접 잡는다) ----
+const info = document.querySelector(".info"), tip = info.querySelector(".tip");
+function placeTip() {
+  const r = info.getBoundingClientRect();
+  tip.style.top = `${r.bottom + 6}px`;
+  tip.style.left = `${Math.min(r.left - 8, window.innerWidth - 272)}px`;
+}
+info.addEventListener("mouseenter", placeTip);
+info.addEventListener("focus", placeTip);
+
+// ---- 라벨 (건물별 기간 안 개수) ----
+const LABEL_Z = 16;
+// 라벨·팝업 위치: 폴리곤 안에서 테두리와 가장 먼 점. 꼭짓점 평균은 ㄷ자·ㄱ자 건물에서 건물 밖(마당)에 떨어진다.
+// 격자로 후보를 훑고 가장 좋은 점 주변을 좁혀 가며 다시 훑는 간단한 근사(polylabel과 같은 목적).
+function ringArea(r) { let a = 0; for (let i = 0, j = r.length - 1; i < r.length; j = i++) a += (r[j][0] - r[i][0]) * (r[j][1] + r[i][1]); return Math.abs(a / 2); }
+function labelPoint(geom) {
+  if (geom.type === "Point") return geom.coordinates;
+  const rings = geom.type === "Polygon" ? geom.coordinates
+    : geom.coordinates.reduce((best, p) => ringArea(p[0]) > ringArea(best[0]) ? p : best);  // 가장 큰 조각
+  const k = Math.cos(rings[0][0][1] * Math.PI / 180);  // 경도 방향 축척 보정
+  const inside = (x, y) => rings.reduce((acc, r) => {
+    let c = false;
+    for (let i = 0, j = r.length - 1; i < r.length; j = i++)
+      if ((r[i][1] > y) !== (r[j][1] > y) && x < (r[j][0] - r[i][0]) * (y - r[i][1]) / (r[j][1] - r[i][1]) + r[i][0]) c = !c;
+    return acc !== c;  // 바깥 링 안, 구멍 밖
+  }, false);
+  const edgeDist = (x, y) => {
+    let m = Infinity;
+    for (const r of rings) for (let i = 0, j = r.length - 1; i < r.length; j = i++) {
+      const [ax, ay] = r[j], [bx, by] = r[i];
+      const dx = (bx - ax) * k, dy = by - ay, px = (x - ax) * k, py = y - ay;
+      const t = Math.max(0, Math.min(1, (px * dx + py * dy) / (dx * dx + dy * dy || 1)));
+      m = Math.min(m, Math.hypot(px - t * dx, py - t * dy));
+    }
+    return m;
+  };
+  let [x0, y0, x1, y1] = [Infinity, Infinity, -Infinity, -Infinity];
+  for (const [x, y] of rings[0]) { x0 = Math.min(x0, x); y0 = Math.min(y0, y); x1 = Math.max(x1, x); y1 = Math.max(y1, y); }
+  let best = null, bestD = -1, w = x1 - x0, h = y1 - y0, cx = (x0 + x1) / 2, cy = (y0 + y1) / 2;
+  for (let pass = 0; pass < 3; pass++) {
+    for (let i = 0; i <= 10; i++) for (let j = 0; j <= 10; j++) {
+      const x = cx - w / 2 + w * i / 10, y = cy - h / 2 + h * j / 10;
+      if (!inside(x, y)) continue;
+      const d = edgeDist(x, y);
+      if (d > bestD) { bestD = d; best = [x, y]; }
+    }
+    if (!best) break;
+    [cx, cy] = best; w /= 4; h /= 4;
+  }
+  return best || rings[0][0];
+}
+function refreshLabels() {
+  const src = map.getSource("labels");
+  if (!src) return;
+  if (map.getZoom() < LABEL_Z) return src.setData({ type: "FeatureCollection", features: [] });
+  // 렌더된 피처는 이미 기간 필터가 걸린 상태다. 타일 경계에서 같은 음식점이 두 번 나올 수 있어 fid로 거른다.
+  const seen = new Set(), groups = new Map();
+  for (const f of map.queryRenderedFeatures({ layers: ["bldg", "store"] })) {
+    if (seen.has(f.id)) continue;
+    seen.add(f.id);
+    const g = f.properties.g;
+    const cur = groups.get(g);
+    const better = !cur || (f.properties.y ?? 9999) < (cur.top.properties.y ?? 9999);  // 기간 안에서 가장 오래된 가게
+    groups.set(g, { count: (cur?.count || 0) + 1, top: better ? f : cur.top });
+  }
+  const features = [...groups.values()].map(({ count, top }) => ({
+    type: "Feature",
+    geometry: { type: "Point", coordinates: labelPoint(top.geometry) },
+    // 이름 속 줄바꿈·연속 공백은 공백 하나로
+    properties: { name: String(top.properties.name ?? "").replace(/\s+/g, " ").trim(), more: count - 1, ...(top.properties.y != null && { y: top.properties.y }),
+                  ...(top.properties.b && { b: top.properties.b }),  // 백년가게(1: 인허가 그대로, 2: 연도를 바꿈)
+                  rank: top.properties.y ?? 9999 },  // 작은 값이 먼저 배치: 오래된 가게 우선, 연도 미상은 맨 뒤
+  }));
+  src.setData({ type: "FeatureCollection", features });
+}
+// 필터·정렬을 바꾼 직후에는 아직 다시 그려지기 전이라, 렌더가 끝난 뒤(idle)에 계산한다.
+function scheduleLabels() { map.once("idle", refreshLabels); }
+
+// ---- 기간 슬라이더 ----
+const fromEl = document.getElementById("from"), toEl = document.getElementById("to");
+for (const el of [fromEl, toEl]) { el.min = MIN_YEAR; el.max = BASE_YEAR; el.step = 1; }
+fromEl.value = MIN_YEAR; toEl.value = BASE_YEAR;
+document.getElementById("axis").innerHTML = [MIN_YEAR, 1980, 2000, 2020, BASE_YEAR]
+  .map(y => `<span>${y === MIN_YEAR ? "~" + y : y}</span>`).join("");
+document.getElementById("chips").innerHTML = PRESETS.map(([l, a, b]) => `<button data-a="${a}" data-b="${b}">${l}</button>`).join("");
+
+function countIn(a, b) {
+  let n = 0;
+  for (const [y, c] of Object.entries(hist)) if (+y <= b && (a <= MIN_YEAR || +y >= a)) n += c;
+  return n + (showUnknown() ? unknownCount : 0);
+}
+function applyRange() {
+  const [a, b] = range;
+  const pa = (a - MIN_YEAR) / (BASE_YEAR - MIN_YEAR) * 100, pb = (b - MIN_YEAR) / (BASE_YEAR - MIN_YEAR) * 100;
+  Object.assign(document.getElementById("range-fill").style, { left: pa + "%", width: (pb - pa) + "%" });
+  document.getElementById("period-label").textContent = (a <= MIN_YEAR ? "~" : a + "–") + (a <= MIN_YEAR && b >= BASE_YEAR ? "현재 (전체)" : b);
+  document.getElementById("period-count").textContent = `${countIn(a, b).toLocaleString()}곳`;
+  document.querySelectorAll("#hist div").forEach(d => d.classList.toggle("on", +d.dataset.y <= b && (a <= MIN_YEAR || +d.dataset.y >= a)));
+  document.querySelectorAll("#chips button[data-a]").forEach(c => c.setAttribute("aria-pressed", +c.dataset.a === a && +c.dataset.b === b));
+  if (!map.getLayer("bldg")) return;
+  for (const id of ["pts", "bldg", "store"]) map.setFilter(id, yearFilter());
+  if (selected) renderDetail();  // 기간 밖 가게 흐림 처리를 다시 반영
+  scheduleLabels();
+}
+function setRange(a, b) {
+  range = [Math.min(a, b), Math.max(a, b)];
+  fromEl.value = range[0]; toEl.value = range[1];
+  applyRange();
+}
+fromEl.addEventListener("input", () => setRange(+fromEl.value, +toEl.value));
+toEl.addEventListener("input", () => setRange(+fromEl.value, +toEl.value));
+document.getElementById("chips").addEventListener("click", e => {
+  const c = e.target.closest("button[data-a]");
+  if (c) setRange(+c.dataset.a, +c.dataset.b);
+});
+
+
+document.getElementById("unknown").addEventListener("change", applyRange);
+
+fetch(HIST).then(r => r.json()).then(h => {
+  hist = h.years;
+  unknownCount = h.unknown || 0;
+  document.getElementById("unknown-wrap").hidden = unknownCount === 0;
+  document.getElementById("unknown-count").textContent = unknownCount.toLocaleString();
+  document.getElementById("base-date").textContent = h.base_date;
+  document.getElementById("guide-date").textContent = h.base_date;
+  const max = Math.max(...Object.values(hist));
+  const bars = [];
+  for (let y = MIN_YEAR; y <= BASE_YEAR; y++) {
+    const c = y === MIN_YEAR ? Object.entries(hist).reduce((n, [k, v]) => +k <= MIN_YEAR ? n + v : n, 0) : (hist[y] || 0);
+    bars.push(`<div data-y="${y}" title="${y}: ${c.toLocaleString()}곳" style="height:${Math.max(2, Math.sqrt(c / max) * 100)}%;background:${eraColor(y)}"></div>`);
+  }
+  document.getElementById("hist").innerHTML = bars.join("");
+  applyRange();
+});
+
+// ---- 건물 hover / 클릭: 음식점 목록 (기간 밖은 흐리게) ----
+function esc(s) { return String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])); }
+const yearOf = r => r.open_year ?? null;  // 보정된 개업 연도(승계 의심이면 상가정보 등록 연도)
+const inRange = y => y == null ? showUnknown() : y <= range[1] && (range[0] <= MIN_YEAR || y >= range[0]);
+const HOVER_ROWS = 12;
+const shardCache = new Map();
+async function restaurants(gid, k) {
+  if (!shardCache.has(k)) shardCache.set(k, fetch(`${DETAIL}${k}.json`).then(r => r.ok ? r.json() : {}).catch(() => ({})));
+  return (await shardCache.get(k))[gid] ?? null;
+}
+function row(r) {
+  const y = yearOf(r);
+  const ym = r.year_source === "baeknyeon" && r.open_year === BAEKNYEON_CAP ? `30년+ · 인허가 ${r.permit_year}`
+    : r.year_source === "sbiz" || r.year_source === "baeknyeon" ? `${r.open_year} · 인허가 ${r.permit_year}`
+    : r.open_date ? String(r.open_date).slice(0, 7).replace("-", ".") : "";
+  const age = y == null ? "연도 미상" : r.years > 0 ? `${r.years}년째` : "올해 개업";
+  return `<li class="${inRange(y) ? "" : "out"}" style="--c:${eraColor(y)}"><span class="dot"></span>
+    <span class="nm">${esc(r.name)}${r.baeknyeon ? '<span class="badge bk">백년가게</span>' : ""}${r.chain ? '<span class="badge chain">체인</span>' : ""}${r.traditional ? '<span class="badge">전통업소</span>' : ""}<span class="sub">${esc(r.kind)}</span></span>
+    <span class="meta">${age}<small>${ym}${r.permit_count > 1 ? ` · 인허가 ${r.permit_count}건` : ""}</small></span></li>`;
+}
+// pinned = 왼쪽 패널 상세(전체 목록), 아니면 hover 팝업(앞쪽 일부)
+function popupHtml(p, d, pinned) {
+  if (!d) return `<div class="pop"><div class="addr">불러오는 중…</div></div>`;
+  // 기간 안의 가게를 먼저, 그 안에서는 오래된 순(연도 미상은 맨 뒤)
+  const items = [...d.restaurants].sort((a, b) => {
+    const ia = inRange(yearOf(a)), ib = inRange(yearOf(b));
+    if (ia !== ib) return ia ? -1 : 1;
+    if (yearOf(a) == null || yearOf(b) == null) return (yearOf(a) == null) - (yearOf(b) == null);
+    return yearOf(a) - yearOf(b) || String(a.open_date).localeCompare(b.open_date);
+  });
+  const rows = pinned ? items : items.slice(0, HOVER_ROWS);
+  const rest = d.count - rows.length;
+  // 제목은 건물(이름 없으면 주소)이고, 이름이 있으면 그 아래 주소. 왼쪽 상세에는 닫기와 가까운 역을 더한다
+  const place = `<h3>${esc(d.building || d.address)}</h3>${d.building ? `<div class="addr">${esc(d.address)}</div>` : ""}`;
+  const head = pinned
+    ? `<button class="close" id="detail-close">닫기 ✕</button>${place}
+       ${d.station ? `<div class="station">${esc(d.station)} · ${d.station_m.toLocaleString()}m <span>도보 약 ${Math.max(1, Math.round(d.station_m / 67))}분</span></div>` : ""}`
+    : place;
+  return `<div class="pop">${head}
+    <ul>${rows.map(row).join("")}</ul>
+    ${rest > 0 ? `<div class="more">${pinned ? `목록은 ${rows.length}곳까지 표시` : `외 ${rest}곳 · 클릭하면 왼쪽에 전체 목록`}</div>` : ""}</div>`;
+}
+
+// feature id = 음식점 fid, 속성 g = 건물 gid.
+const TARGETS = ["bldg", "store"];
+const anchor = f => labelPoint(f.geometry);  // 라벨과 같은 위치에 팝업을 단다
+const hoverPopup = new maplibregl.Popup({ closeButton: false, closeOnClick: false, offset: 10, maxWidth: "340px" });
+let hoverGid = null;
+map.on("mousemove", TARGETS, async e => {
+  const f = e.features[0], gid = f.properties.g;
+  map.getCanvas().style.cursor = "pointer";
+  if (gid === hoverGid) return;
+  hoverGid = gid;
+  hoverPopup.setLngLat(anchor(f)).setHTML(popupHtml(f.properties, null)).addTo(map);
+  const d = await restaurants(gid, f.properties.k);
+  if (hoverGid === gid) hoverPopup.setHTML(popupHtml(f.properties, d));
+});
+map.on("mouseleave", TARGETS, () => {
+  map.getCanvas().style.cursor = "";
+  hoverGid = null;
+  hoverPopup.remove();
+});
+// 클릭: 왼쪽 패널 아래에 그 건물의 전체 목록을 보여주고, 지도에는 선택한 건물 외곽선을 표시한다.
+const detailEl = document.getElementById("detail");
+const DETAIL_HINT = detailEl.innerHTML;
+let selected = null;  // { gid, props }
+function selectFilter(gid) { return ["==", ["get", "g"], gid ?? -1]; }
+async function renderDetail() {
+  if (!selected) { detailEl.innerHTML = DETAIL_HINT; return; }
+  const { gid, props } = selected;
+  detailEl.innerHTML = popupHtml(props, null, true);
+  const d = await restaurants(gid, props.k);
+  if (selected?.gid === gid) detailEl.innerHTML = popupHtml(props, d, true);
+}
+function select(gid, props) {
+  selected = gid == null ? null : { gid, props };
+  for (const id of ["sel", "sel-pt"]) map.setFilter(id, selectFilter(gid));
+  renderDetail();
+}
+const panel = document.querySelector(".panel"), foldBtn = document.getElementById("fold");
+function setFolded(folded) {
+  panel.classList.toggle("folded", folded);
+  foldBtn.setAttribute("aria-expanded", !folded);
+  foldBtn.title = folded ? "패널 펼치기" : "패널 접기";
+}
+foldBtn.addEventListener("click", () => setFolded(!panel.classList.contains("folded")));
+map.on("click", TARGETS, e => { select(e.features[0].properties.g, e.features[0].properties); setFolded(false); });
+detailEl.addEventListener("click", e => { if (e.target.id === "detail-close") select(null); });
+</script>
+</body>
+</html>

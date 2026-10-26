@@ -1,0 +1,291 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>서울 상가 지도</title>
+<link rel="stylesheet" href="https://unpkg.com/maplibre-gl@5.24.0/dist/maplibre-gl.css">
+<script src="https://unpkg.com/maplibre-gl@5.24.0/dist/maplibre-gl.js"></script>
+<script src="https://unpkg.com/pmtiles@4.5.0/dist/pmtiles.js"></script>
+<script src="https://unpkg.com/@protomaps/basemaps@5.7.2/dist/basemaps.js"></script>
+<style>
+  :root { --bg: #f4f4f2; --fg: #1d2330; --muted: #6b7280; --line: #e5e7eb; --panel: rgba(255,255,255,.95); }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) { --bg: #111418; --fg: #e8eaed; --muted: #9aa0a6; --line: #2c3138; --panel: rgba(22,25,30,.95); }
+  }
+  :root[data-theme="dark"] { --bg: #111418; --fg: #e8eaed; --muted: #9aa0a6; --line: #2c3138; --panel: rgba(22,25,30,.95); }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg);
+    font: 13px/1.45 system-ui, -apple-system, "Segoe UI", "Malgun Gothic", sans-serif; }
+  #map { position: absolute; inset: 0; }
+  .panel { position: absolute; top: 12px; left: 12px; width: 290px; max-width: calc(100vw - 48px);
+    background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px;
+    box-shadow: 0 4px 16px rgba(0,0,0,.12); }
+  .panel h1 { font-size: 15px; margin: 0 0 2px; }
+  .sub { color: var(--muted); font-size: 12px; margin-bottom: 10px; }
+  .seg { display: grid; grid-template-columns: 1fr 1fr; border: 1px solid var(--line); border-radius: 7px; overflow: hidden; }
+  .seg button { font: inherit; padding: 6px 0; border: 0; background: transparent; color: var(--fg); cursor: pointer; }
+  .seg button[aria-pressed="true"] { background: var(--fg); color: var(--bg); }
+  .legend { display: grid; grid-template-columns: 1fr 1fr; gap: 3px 10px; font-size: 12px; margin-top: 10px; }
+  .legend span::before { content: ""; display: inline-block; width: 9px; height: 9px; border-radius: 50%;
+    margin-right: 5px; background: var(--c); vertical-align: -1px; }
+  .gridnote { color: var(--muted); font-size: 11px; margin-top: 8px; }
+  .ramp { height: 8px; border-radius: 3px; margin-top: 4px; }
+  #hover { margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--line); font-size: 12px; min-height: 18px; }
+  #hover b { font-variant-numeric: tabular-nums; }
+  .maplibregl-popup-content { background: var(--panel); color: var(--fg); font-size: 12px; padding: 10px 12px; }
+  .maplibregl-popup-tip { border-top-color: var(--panel) !important; border-bottom-color: var(--panel) !important; }
+  .pop h3 { margin: 0 0 2px; font-size: 14px; }
+  .pop .cat { color: var(--muted); margin-bottom: 6px; }
+  .pop .addr { color: var(--muted); margin-bottom: 6px; }
+  .pop .mix { display: flex; height: 6px; border-radius: 3px; overflow: hidden; margin: 4px 0 8px; }
+  .pop ul { list-style: none; margin: 0; padding: 0; }
+  .pop.pinned ul { max-height: 300px; overflow-y: auto; }
+  .pop li { display: grid; grid-template-columns: 10px 1fr auto; gap: 6px; align-items: baseline;
+    padding: 3px 0; border-top: 1px solid var(--line); }
+  .pop li .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--c); align-self: center; }
+  .pop li .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .pop li .sub { color: var(--muted); font-size: 11px; display: block; }
+  .pop li .meta { color: var(--muted); font-size: 11px; text-align: right; white-space: nowrap; }
+  .pop .new { color: #2a788e; font-weight: 600; }
+  .pop .more { color: var(--muted); font-size: 11px; padding-top: 4px; border-top: 1px solid var(--line); }
+</style>
+</head>
+<body>
+<div id="map"></div>
+<div class="panel">
+  <h1>서울 상가 지도</h1>
+  <div class="sub">소상공인시장진흥공단 상가(상권)정보 · 2026년 6월 기준 · 554,092개 업소</div>
+  <div class="seg" role="group" aria-label="색상 기준">
+    <button data-mode="cat" aria-pressed="true">업종</button>
+    <button data-mode="reg" aria-pressed="false">등록 시기</button>
+  </div>
+  <div class="legend" id="legend"></div>
+  <div class="gridnote" id="gridnote"></div>
+  <div id="hover">격자나 업소에 마우스를 올려보세요.</div>
+</div>
+<script>
+const TILES = "pmtiles://" + new URL("../out/seoul_stores.pmtiles", location.href).href;
+// 배경지도: Overture 데이터를 Protomaps basemaps(--overture)로 빌드한 서울 PMTiles
+const BASEMAP = "pmtiles://" + new URL("../out/basemap_seoul_overture.pmtiles", location.href).href;
+
+const protocol = new pmtiles.Protocol();
+maplibregl.addProtocol("pmtiles", protocol.tile);
+
+const CATS = {
+  I2: ["음식", "#e5603a"], G2: ["소매", "#3b82f6"], M1: ["과학·기술", "#8b5cf6"], S2: ["수리·개인", "#14b8a6"],
+  P1: ["교육", "#f59e0b"], N1: ["시설관리·임대", "#64748b"], L1: ["부동산", "#a16207"], R1: ["예술·스포츠", "#ec4899"],
+  Q1: ["보건의료", "#10b981"], I1: ["숙박", "#0ea5e9"],
+};
+const RAMP = ["#f7f4f9", "#d4b9da", "#c994c7", "#df65b0", "#dd1c77", "#980043"];
+
+const catColor = ["match", ["get", "cat"], ...Object.entries(CATS).flatMap(([k, [, c]]) => [k, c]), "#9ca3af"];
+// 건물(또는 좌표 묶음) 안에서 2022-08 이후 등록된 업소의 비율.
+// 등록 연월은 상가업소번호 7–12자리이고, 2022-08은 시스템 전환 때 기존 업소에 일괄 부여된 값이다.
+const NEW_STOPS = [[0, "#d5d8e0"], [25, "#7ad151"], [50, "#22a884"], [75, "#2a788e"], [100, "#440154"]];
+const newColor = ["interpolate", ["linear"], ["get", "newp"], ...NEW_STOPS.flat()];
+// 업종 모드: 최다 업종 색, 그 업종 비중이 높을수록 진하게
+const shareOpacity = ["interpolate", ["linear"], ["get", "share"], 20, 0.3, 50, 0.6, 100, 0.92];
+
+// 격자 한 칸의 면적은 줌마다 4배씩 줄어드니, z13 기준 구간값을 줌에 맞춰 늘린다.
+function densityColor() {
+  const stops = [1, 5, 20, 60, 150, 400];
+  const byZoom = [];
+  for (const z of [8, 10, 12, 13]) {
+    const k = Math.pow(4, 13 - z);
+    const e = ["interpolate", ["linear"], ["ln", ["get", "n"]]];
+    stops.forEach((s, i) => e.push(Math.log(s * k), RAMP[i]));
+    byZoom.push(z, e);
+  }
+  return ["interpolate", ["linear"], ["zoom"], ...byZoom];
+}
+function pctColor(key, max) {
+  const e = ["interpolate", ["linear"], ["get", key]];
+  RAMP.forEach((c, i) => e.push(Math.round(max * i / (RAMP.length - 1)), c));
+  return e;
+}
+
+let mode = "cat";
+const MODES = {
+  cat: { color: catColor, opacity: shareOpacity, grid: densityColor(),
+         note: "z14부터 건물 = 최다 업종 색, 비중이 클수록 진하게 · 격자: 업소 밀도",
+         legend: () => Object.values(CATS).map(([n, c]) => `<span style="--c:${c}">${n}</span>`).join("") },
+  reg: { color: newColor, opacity: 0.85, grid: pctColor("recent", 40),
+         note: "z14부터 건물 = 2022-08 이후 등록 업소 비율 · 격자: 최근 1년 등록 비율 (0–40%+)",
+         legend: () => NEW_STOPS.map(([v, c]) => `<span style="--c:${c}">신규 ${v}%</span>`).join("") },
+};
+
+function baseStyle() {
+  const dark = matchMedia("(prefers-color-scheme: dark)").matches;
+  const flavor = dark ? "black" : "grayscale";
+  const layers = basemaps.layers("basemap", basemaps.namedFlavor(flavor), { lang: "ko" })
+    .filter(l => !/pois|landuse_pedestrian/.test(l.id));
+  return {
+    version: 8,
+    glyphs: "https://protomaps.github.io/basemaps-assets/fonts/{fontstack}/{range}.pbf",
+    sprite: `https://protomaps.github.io/basemaps-assets/sprites/v4/${flavor}`,
+    sources: { basemap: { type: "vector", url: BASEMAP, attribution: "© Overture Maps Foundation · © OpenStreetMap · Protomaps" } },
+    layers,
+  };
+}
+
+const map = new maplibregl.Map({
+  container: "map", style: baseStyle(), center: [126.98, 37.55], zoom: 11, minZoom: 9, maxZoom: 19, hash: true,
+  maxBounds: [[126.76, 37.41], [127.19, 37.72]],  // 배경지도를 잘라 낸 영역(extract_basemap.py bbox). 바깥이 보이지 않게
+});
+map.addControl(new maplibregl.NavigationControl(), "top-right");
+map.addControl(new maplibregl.ScaleControl(), "bottom-right");
+
+map.on("load", () => {
+  map.addSource("stores", { type: "vector", url: TILES, attribution: "소상공인시장진흥공단 상가(상권)정보" });
+  const firstLabel = map.getStyle().layers.find(l => l.type === "symbol")?.id;
+  map.addLayer({
+    id: "grid", type: "fill", source: "stores", "source-layer": "grid", maxzoom: 14.5,
+    paint: { "fill-color": MODES[mode].grid,
+             "fill-opacity": ["interpolate", ["linear"], ["zoom"], 9, 0.75, 13, 0.7, 14, 0.25, 14.5, 0] },
+  }, firstLabel);
+  map.addLayer({
+    id: "bldg", type: "fill", source: "stores", "source-layer": "bldg", minzoom: 14,
+    paint: { "fill-color": MODES[mode].color, "fill-opacity": MODES[mode].opacity },
+  }, firstLabel);
+  map.addLayer({
+    id: "bldg-line", type: "line", source: "stores", "source-layer": "bldg", minzoom: 15,
+    paint: { "line-color": "#ffffff", "line-width": ["interpolate", ["linear"], ["zoom"], 15, 0.3, 18, 1], "line-opacity": 0.8 },
+  }, firstLabel);
+  // 건물 폴리곤을 못 찾은 좌표(전체 업소의 약 20%)는 점으로 남긴다.
+  map.addLayer({
+    id: "store", type: "circle", source: "stores", "source-layer": "store", minzoom: 14,
+    // 업소가 많은 건물을 아래에 깔아야 작은 점이 가려지지 않는다.
+    layout: { "circle-sort-key": ["-", ["get", "n"]] },
+    paint: {
+      "circle-color": MODES[mode].color,
+      // 면적이 업소 수에 비례하도록 반지름은 sqrt(n)
+      "circle-radius": ["interpolate", ["linear"], ["zoom"],
+        14, ["min", 14, ["+", 1.5, ["*", 0.5, ["sqrt", ["get", "n"]]]]],
+        17, ["min", 28, ["+", 3, ["*", 1.1, ["sqrt", ["get", "n"]]]]],
+        19, ["min", 44, ["+", 5, ["*", 1.8, ["sqrt", ["get", "n"]]]]]],
+      "circle-opacity": 0.85,
+      "circle-stroke-width": ["interpolate", ["linear"], ["zoom"], 14, 0.3, 16, 0.8],
+      "circle-stroke-color": "#fff",
+    },
+  });
+  map.addLayer({
+    id: "store-label", type: "symbol", source: "stores", "source-layer": "store", minzoom: 16,
+    layout: {
+      "text-field": ["get", "name"], "text-font": ["Noto Sans Regular"],
+      "text-size": ["interpolate", ["linear"], ["zoom"], 16, 10, 19, 12],
+      "text-anchor": "left", "text-max-width": 8, "text-optional": true,
+      // 점 반지름만큼 오른쪽으로 띄운다 (em 단위라 대략값)
+      "text-radial-offset": ["interpolate", ["linear"], ["zoom"], 16, ["+", 0.5, ["*", 0.08, ["sqrt", ["get", "n"]]]],
+        19, ["+", 0.7, ["*", 0.15, ["sqrt", ["get", "n"]]]]],
+      "symbol-sort-key": ["-", ["get", "n"]],  // 큰 건물 이름을 먼저 배치
+    },
+    paint: { "text-color": "#30343c", "text-halo-color": "#fff", "text-halo-width": 1.2 },
+  });
+  map.addLayer({
+    id: "bldg-label", type: "symbol", source: "stores", "source-layer": "bldg", minzoom: 16,
+    filter: [">=", ["get", "n"], 2],
+    layout: {
+      "text-field": ["get", "name"], "text-font": ["Noto Sans Regular"],
+      "text-size": ["interpolate", ["linear"], ["zoom"], 16, 10, 19, 12], "text-max-width": 7,
+      "symbol-sort-key": ["-", ["get", "n"]],
+    },
+    paint: { "text-color": "#30343c", "text-halo-color": "#fff", "text-halo-width": 1.2 },
+  });
+  setMode(mode);
+});
+
+function setMode(m) {
+  mode = m;
+  document.querySelectorAll(".seg button").forEach(b => b.setAttribute("aria-pressed", b.dataset.mode === m));
+  if (map.getLayer("store")) {
+    map.setPaintProperty("store", "circle-color", MODES[m].color);
+    map.setPaintProperty("bldg", "fill-color", MODES[m].color);
+    map.setPaintProperty("bldg", "fill-opacity", MODES[m].opacity);
+    map.setPaintProperty("grid", "fill-color", MODES[m].grid);
+  }
+  document.getElementById("legend").innerHTML = MODES[m].legend();
+  document.getElementById("gridnote").innerHTML = MODES[m].note +
+    `<div class="ramp" style="background:linear-gradient(90deg,${RAMP.join(",")})"></div>`;
+}
+document.querySelectorAll(".seg button").forEach(b => b.addEventListener("click", () => setMode(b.dataset.mode)));
+
+const hover = document.getElementById("hover");
+map.on("mousemove", "grid", e => {
+  if (map.getZoom() >= 14) return;
+  const p = e.features[0].properties;
+  hover.innerHTML = `업소 <b>${p.n.toLocaleString()}</b>개 · 음식점 <b>${p.food}%</b><br>` +
+    `2022-08 이후 등록 <b>${p.new}%</b> · 최근 1년 등록 <b>${p.recent}%</b>`;
+});
+map.on("mouseleave", "grid", () => { hover.textContent = "격자나 업소에 마우스를 올려보세요."; });
+
+function esc(s) { return String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])); }
+function ymText(ym) { return ym <= 202208 ? "2022-08 이전부터" : `${String(ym).slice(0, 4)}-${String(ym).slice(4)}`; }
+
+// 타일 속성(이름·업소 수)으로 팝업을 즉시 띄우고, 건물의 업소 목록은 API로 채운다.
+// hover는 앞쪽 일부만, 클릭하면 전체 목록을 스크롤할 수 있게 고정한다.
+const HOVER_ROWS = 12;
+const buildingCache = new Map();
+function building(bid) {
+  if (!buildingCache.has(bid)) buildingCache.set(bid, fetch(`/api/building/${bid}`).then(r => r.ok ? r.json() : null).catch(() => null));
+  return buildingCache.get(bid);
+}
+function floorText(f) { return !f ? "" : f.startsWith("B") ? `지하 ${f.slice(1)}층` : `${f}층`; }
+function storeRow(s) {
+  const [, c] = CATS[s.cat_l] || [, "#9ca3af"];
+  const name = s.branch ? `${s.name} ${s.branch}` : s.name;
+  const isNew = s.reg_ym > 202208;
+  return `<li style="--c:${c}"><span class="dot"></span>
+    <span class="nm">${esc(name)}<span class="sub">${esc(s.cat_s_name || s.cat_m_name)}</span></span>
+    <span class="meta">${esc(floorText(s.floor))}${isNew ? `<br><span class="new">${esc(ymText(s.reg_ym))}</span>` : ""}</span></li>`;
+}
+function mixBar(stores) {
+  const counts = {};
+  stores.forEach(s => counts[s.cat_l] = (counts[s.cat_l] || 0) + 1);
+  return `<div class="mix">${Object.entries(counts).sort((a, b) => b[1] - a[1])
+    .map(([k, v]) => `<span title="${esc(CATS[k]?.[0] || k)} ${v}" style="flex:${v};background:${CATS[k]?.[1] || "#9ca3af"}"></span>`).join("")}</div>`;
+}
+function popupHtml(p, b, pinned) {
+  const title = b?.building || p.name;
+  if (!b) {
+    return `<div class="pop"><h3>${esc(title)}</h3><div class="addr">업소 ${p.n.toLocaleString()}곳 · 불러오는 중…</div></div>`;
+  }
+  const rows = pinned ? b.stores : b.stores.slice(0, HOVER_ROWS);
+  const rest = b.count - rows.length;
+  const newCount = b.stores.filter(s => s.reg_ym > 202208).length;
+  return `<div class="pop${pinned ? " pinned" : ""}"><h3>${esc(title)}</h3>
+    <div class="addr">${esc(b.road_address)} · 업소 <b>${b.count.toLocaleString()}</b>곳${newCount ? ` · 2022-08 이후 등록 ${newCount}곳` : ""}</div>
+    ${b.count > 1 ? mixBar(b.stores) : ""}
+    <ul>${rows.map(storeRow).join("")}</ul>
+    ${rest > 0 ? `<div class="more">${pinned ? `목록은 ${rows.length}곳까지 표시` : `외 ${rest.toLocaleString()}곳 · 클릭하면 전체 목록`}</div>` : ""}</div>`;
+}
+
+// feature id = gid (건물 폴리곤 또는 폴리곤 없는 좌표 묶음). 점은 점 위치에, 건물은 마우스가 들어온 위치에 팝업을 단다.
+const TARGETS = ["bldg", "store"];
+const anchor = (f, e) => f.geometry.type === "Point" ? f.geometry.coordinates : e.lngLat;
+const hoverPopup = new maplibregl.Popup({ closeButton: false, closeOnClick: false, offset: 10, maxWidth: "340px" });
+let hoverGid = null;
+map.on("mousemove", TARGETS, async e => {
+  const f = e.features[0];
+  map.getCanvas().style.cursor = "pointer";
+  if (f.id === hoverGid) return;
+  hoverGid = f.id;
+  hoverPopup.setLngLat(anchor(f, e)).setHTML(popupHtml(f.properties, null)).addTo(map);
+  const b = await building(f.id);
+  if (hoverGid === f.id) hoverPopup.setHTML(popupHtml(f.properties, b));
+});
+map.on("mouseleave", TARGETS, () => {
+  map.getCanvas().style.cursor = "";
+  hoverGid = null;
+  hoverPopup.remove();
+});
+map.on("click", TARGETS, async e => {
+  const f = e.features[0];
+  hoverPopup.remove();
+  hoverGid = null;
+  const p = new maplibregl.Popup({ offset: 10, maxWidth: "340px" }).setLngLat(anchor(f, e))
+    .setHTML(popupHtml(f.properties, null, true)).addTo(map);
+  p.setHTML(popupHtml(f.properties, await building(f.id), true));
+});
+</script>
+</body>
+</html>
