@@ -517,9 +517,16 @@ function row(r) {
     : r.open_date ? String(r.open_date).slice(0, 7).replace("-", ".") : "";
   const age = y == null ? "연도 미상" : r.years > 0 ? `${r.years}년째` : "올해 개업";
   return `<li class="${inRange(y) ? "" : "out"}" style="--c:${eraColor(y)}"><span class="dot"></span>
-    <span class="nm">${esc(r.name)}<span class="sub">${esc(r.kind)}${r.baeknyeon ? '<span class="badge bk">백년가게</span>' : ""}${r.chain ? '<span class="badge chain">체인</span>' : ""}${r.traditional ? '<span class="badge">전통업소</span>' : ""}</span></span>
+    <span class="nm" data-full="${esc(r.name)}">${esc(r.name)}<span class="sub">${esc(r.kind)}${r.baeknyeon ? '<span class="badge bk">백년가게</span>' : ""}${r.chain ? '<span class="badge chain">체인</span>' : ""}${r.traditional ? '<span class="badge">전통업소</span>' : ""}</span></span>
     <span class="meta">${age}<small>${ym}${r.permit_count > 1 ? ` · 인허가 ${r.permit_count}건` : ""}</small></span></li>`;
 }
+// 상호가 잘려 말줄임(…)으로 보일 때만 마우스를 올리면 전체 상호를 툴팁으로 보여준다
+document.addEventListener("mouseover", e => {
+  const nm = e.target.closest?.(".pop li .nm");
+  if (!nm) return;
+  if (nm.scrollWidth > nm.clientWidth) nm.title = nm.dataset.full;
+  else nm.removeAttribute("title");
+});
 // pinned = 왼쪽 패널 상세(전체 목록), 아니면 hover 팝업(앞쪽 일부)
 function popupHtml(p, d, pinned) {
   if (!d) return `<div class="pop"><div class="addr">불러오는 중…</div></div>`;
