@@ -377,6 +377,19 @@ rows = con.execute("""
   FROM r JOIN shard sh USING (gid)
   ORDER BY sh.k, r.gid, r.open_year NULLS LAST, r.open_date NULLS LAST, r.name
 """).fetchall()
+ROAD_ADDR = re.compile(r"^(.+?(?:로|길)\s+\d+(?:-\d+)?)(?=[\s,(]|$)")
+
+
+def building_address(a):
+    """가게 주소에서 층·호수를 떼고 건물 주소만 남긴다.
+    '서울특별시 용산구 보광로 118, 2층 (이태원동, ○○빌딩)' → '서울특별시 용산구 보광로 118 (이태원동)'"""
+    m = ROAD_ADDR.match(a)
+    if not m:
+        return a
+    dong = re.search(r"\(([^,)]+)", a[m.end():])
+    return m.group(1) + (f" ({dong.group(1).strip()})" if dong else "")
+
+
 shards = defaultdict(lambda: defaultdict(list))
 for k, gid, *rest in rows:
     shards[k][gid].append(rest)
@@ -384,7 +397,7 @@ for k, buildings_ in shards.items():
     out = {}
     for gid, items in buildings_.items():
         names = Counter(i[12] for i in items if i[12])
-        addrs = Counter(i[7] for i in items if i[7])
+        addrs = Counter(building_address(i[7]) for i in items if i[7])
         near = min((i for i in items if i[14] is not None), key=lambda i: i[14], default=None)
         out[gid] = {
             "count": len(items),
