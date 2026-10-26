@@ -263,7 +263,7 @@ function baseStyle() {
 }
 
 const map = new maplibregl.Map({
-  container: "map", style: baseStyle(), center: [126.985, 37.565], zoom: 11.5, minZoom: 9, maxZoom: 19, hash: true,
+  container: "map", style: baseStyle(), center: [126.985, 37.565], zoom: 13, minZoom: 9, maxZoom: 19, hash: true,
   maxBounds: [[126.76, 37.41], [127.19, 37.72]],  // 배경지도를 잘라 낸 영역(extract_basemap.py bbox). 바깥이 보이지 않게
 });
 map.addControl(new maplibregl.NavigationControl(), "top-right");
@@ -375,7 +375,7 @@ info.addEventListener("mouseenter", placeTip);
 info.addEventListener("focus", placeTip);
 
 // ---- 라벨 (건물별 기간 안 개수) ----
-const LABEL_Z = 16;
+const LABEL_Z = 15;
 // 라벨·팝업 위치: 폴리곤 안에서 테두리와 가장 먼 점. 꼭짓점 평균은 ㄷ자·ㄱ자 건물에서 건물 밖(마당)에 떨어진다.
 // 격자로 후보를 훑고 가장 좋은 점 주변을 좁혀 가며 다시 훑는 간단한 근사(polylabel과 같은 목적).
 function ringArea(r) { let a = 0; for (let i = 0, j = r.length - 1; i < r.length; j = i++) a += (r[j][0] - r[i][0]) * (r[j][1] + r[i][1]); return Math.abs(a / 2); }
