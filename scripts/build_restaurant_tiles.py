@@ -102,12 +102,17 @@ FROM src  -- 인허가일자가 없거나 읽을 수 없어도 남긴다(연도 
 con.sql(f"ALTER TABLE r ADD COLUMN years INTEGER; UPDATE r SET years = {base_year} - open_year;")
 tiling.match_buildings(con, "r", buildings)
 # 건물명 칸(상가정보·Overture)에는 '일부', '우측', '1~2층', '나호', '102동' 같은 위치·층·호수 표기가 섞여 있어 걸러낸다.
+# '외필지'(○○ 외 1필지), '중일부', '전면우측', '본관동', 동 이름만 적힌 '서교동' 같은 값도 건물 이름이 아니다.
 con.sql(r"""
 CREATE MACRO real_building_name(b) AS CASE WHEN
   length(b) >= 3
   AND NOT regexp_matches(b, '^(우측|좌측|일부|전체|왼쪽|오른쪽|가운데|명칭|지하|지상|비[0-9])')
   AND NOT regexp_matches(b, '[0-9~]+층$|^.{1,2}호$|^[0-9]+(-[0-9]+)?동?$')  -- 층·호수·아파트 동 번호·지번
   AND upper(b) NOT IN ('빌딩', '타워', 'TOWER', '건물', '주택')
+  AND NOT regexp_matches(b, '(일부|측|쪽|부분|층|필지|번지)$')  -- 위치 표기
+  AND NOT regexp_matches(b, '^(외필지|외부|내제|중일부|맨(우|좌)|옥탑|전면|후면|정면|상가(일부|좌|우)|점포일부|코너일부)')
+  AND NOT (regexp_matches(b, '^외[가-힣]{1,4}$') AND NOT regexp_matches(b, '(빌딩|은행|타워|회관|센터|프라자|플라자)$'))  -- '외 ○○' 잘린 값
+  AND NOT regexp_matches(b, '^[가-힣]{1,4}동[0-9]*가?$')  -- 동 이름·건물 안 구역(본관동, 판매동)
   THEN b END
 """)
 store_names = (f"SELECT bld, mode(real_building_name(building)) AS nm FROM '{stores}' WHERE bld IS NOT NULL GROUP BY bld"
