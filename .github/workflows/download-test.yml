@@ -1,0 +1,50 @@
+# GitHub 러너(해외 IP)에서 원천 데이터를 받을 수 있는지 확인한다. 수동 실행 전용.
+name: Download test
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    env:
+      UA: "Mozilla/5.0 (seoul-restaurant-age)"
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Runner IP
+        run: curl -s --max-time 20 https://ipinfo.io/json || true
+
+      - name: 공공데이터포털 페이지 접속
+        run: |
+          for u in https://www.data.go.kr/data/15045016/fileData.do https://www.data.go.kr/data/15083033/fileData.do; do
+            curl -s -o /dev/null --max-time 60 -A "$UA" -w "$u -> %{http_code} %{size_download}B %{time_total}s\n" "$u" || echo "$u -> FAILED"
+          done
+
+      - name: LOCALDATA 일반음식점 (서울)
+        run: |
+          set +e
+          D=$(mktemp -d); J=$D/jar; R=https://www.data.go.kr/data/15045016/fileData.do
+          curl -s -c $J -b $J -A "$UA" --max-time 60 "$R" -o /dev/null
+          echo "validate: $(curl -s -w ' %{http_code}' --max-time 60 -c $J -b $J -A "$UA" -e $R https://file.localdata.go.kr/file/validate/download-count)"
+          curl -s --max-time 600 -D $D/h.txt -c $J -b $J -A "$UA" -e $R -o $D/seoul.download \
+            "https://file.localdata.go.kr/file/download/general_restaurants/info?orgCode=6110000_ALL"
+          echo "exit: $?"
+          grep -i -E "HTTP/|content-type|content-disposition|content-length" $D/h.txt
+          ls -la $D/seoul.download; file $D/seoul.download
+          head -c 200 $D/seoul.download | od -c | head -3
+
+      - name: 상가(상권)정보 2025-12 스냅샷
+        run: |
+          set +e
+          bash scripts/download_sbiz_snapshots.sh "$RUNNER_TEMP/sbiz" 20251231:uddi:3e70fffc-390a-4bc7-8b4a-ab5cf0f846bf
+          echo "exit: $?"
+          ls -la "$RUNNER_TEMP/sbiz"/*/ ; file "$RUNNER_TEMP/sbiz"/*/*.zip
+
+      - name: Overture (S3)
+        run: |
+          curl -s -o /dev/null --max-time 60 -w "overture s3 -> %{http_code}\n" \
+            "https://overturemaps-us-west-2.s3.us-west-2.amazonaws.com/?list-type=2&prefix=release/&delimiter=/&max-keys=5"
