@@ -27,9 +27,9 @@ Overture 데이터를 Protomaps basemaps(`--overture`)로 빌드해 서울 배�
 | 자료 | 용도 |
 | --- | --- |
 | [행정안전부 지방행정 인허가 – 식품_일반음식점](https://www.data.go.kr/data/15045016/fileData.do) | 영업 중인 음식점, 인허가일자, 위치 |
-| [소상공인시장진흥공단 상가(상권)정보](https://www.data.go.kr/data/15083033/fileData.do) (2019~2025 연말, 2026년 6월) | 가게가 실제로 존재한 시점 확인 |
-| [소상공인시장진흥공단 백년가게 지정 목록](https://www.data.go.kr/data/15132695/fileData.do) (2022, 2026) | 업력 30년 이상 검증 |
-| [Overture Maps](https://overturemaps.org) (2026-10-21.0) | 건물 외곽선, 지하철역, 배경지도 |
+| [소상공인시장진흥공단 상가(상권)정보](https://www.data.go.kr/data/15083033/fileData.do) (2019년~전년 연말, 최신) | 가게가 실제로 존재한 시점 확인 |
+| [소상공인시장진흥공단 백년가게 지정 목록](https://www.data.go.kr/data/15132695/fileData.do) (공공데이터포털에 올라온 지정 목록 전부) | 업력 30년 이상 검증 |
+| [Overture Maps](https://overturemaps.org) (최신 릴리스) | 건물 외곽선, 지하철역, 배경지도 |
 
 ## 개업 연도 추정 방법
 
@@ -85,11 +85,23 @@ Overture 데이터를 Protomaps basemaps(`--overture`)로 빌드해 서울 배�
 scripts/build_restaurant_tiles.py   음식점 테이블·타일·상세 JSON 생성
 scripts/tiling.py, mvt.py           건물 매칭, MVT 인코딩
 scripts/build_site.py               배포용 site/ 폴더 생성
+scripts/fetch_sources.py            공공데이터(인허가·상가정보·백년가게) 받기
+.github/workflows/build.yml         매월 데이터 갱신·빌드·배포
 viewer/restaurants.html             로컬 개발용 뷰어 (scripts/serve.py로 실행)
 site/                               배포본 (GitHub Actions가 Pages에 올림)
 ```
 
 원본 데이터(`data/`)와 중간 산출물(`out/`)은 용량 문제로 저장소에 포함하지 않았습니다.
+
+### 자동 갱신
+
+GitHub Actions(`Build data` 워크플로)가 매월 2일 새벽에 원천 데이터를 새로 받아 지도를 다시 만들고 배포합니다.
+
+- 인허가 데이터는 매번 새로 받고, 상가정보는 가장 최근 파일과 2019년부터 그 전년까지의 연말 파일을, 백년가게는 공공데이터포털에 올라온 지정 목록 전부를 씁니다.
+- 건물 외곽선과 지하철역은 Overture의 최신 릴리스에서 가져옵니다. 배경지도는 다시 만들지 않습니다.
+- 음식점 수가 직전보다 10% 넘게 줄면 원천 파일 문제로 보고 배포하지 않습니다.
+
+로컬에서 같은 순서로 빌드하려면 워크플로의 단계를 그대로 실행하면 됩니다(`pip install -r scripts/requirements.txt` 후 `python scripts/fetch_sources.py data`부터).
 
 ## 호스팅
 

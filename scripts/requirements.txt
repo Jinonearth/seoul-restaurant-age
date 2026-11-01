@@ -1,0 +1,4 @@
+duckdb==1.5.6
+numpy==2.5.4
+pmtiles==3.8.1
+shapely==2.2.0

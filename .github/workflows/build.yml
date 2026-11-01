@@ -1,0 +1,145 @@
+# 원천 데이터를 새로 받아 음식점 타일·상세 JSON을 다시 만들고, site/를 커밋한 뒤 GitHub Pages에 올린다.
+# 매월 2일 03:00(KST)에 돈다. 배경지도(site/data/basemap.pmtiles)는 다시 만들지 않고 그대로 쓴다.
+# 수동 실행에서 publish를 끄면 커밋·배포 없이 결과 site/를 아티팩트로만 남긴다.
+name: Build data
+
+on:
+  schedule:
+    - cron: "0 18 1 * *"
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: "site/ 커밋 후 Pages 배포"
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+concurrency:
+  group: build-data
+  cancel-in-progress: false
+
+env:
+  BBOX: "126.76,37.41,127.19,37.72"  # 배경지도와 같은 서울 영역
+  PUBLISH: ${{ github.event_name == 'schedule' || inputs.publish }}
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
+          cache: pip
+          cache-dependency-path: scripts/requirements.txt
+      - run: pip install -r scripts/requirements.txt
+
+      - name: Overture 릴리스
+        id: overture
+        run: |
+          rel=$(curl -s "https://overturemaps-us-west-2.s3.us-west-2.amazonaws.com/?list-type=2&prefix=release/&delimiter=/" \
+            | grep -o "<Prefix>release/[^<]*/</Prefix>" | sed 's#<Prefix>release/##; s#/</Prefix>##' | sort -V | tail -1)
+          test -n "$rel"
+          echo "release=$rel" >> "$GITHUB_OUTPUT"
+          echo "Overture $rel"
+
+      # 연말 스냅샷·백년가게는 한 번 받으면 바뀌지 않는다. 최신 상가정보는 기준일이 같으면 다시 받지 않는다
+      - uses: actions/cache@v4
+        with:
+          path: |
+            data/raw
+            !data/raw/localdata
+          key: raw-${{ github.run_id }}
+          restore-keys: raw-
+
+      - uses: actions/cache@v4
+        id: overture-cache
+        with:
+          path: data/overture
+          key: overture-${{ steps.overture.outputs.release }}-${{ env.BBOX }}
+
+      - name: 공공데이터 받기
+        run: python -I scripts/fetch_sources.py data
+
+      - name: Overture 건물·지하철역
+        if: steps.overture-cache.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p data/overture
+          python -I scripts/extract_buildings.py "${{ steps.overture.outputs.release }}" data/overture/buildings.parquet "$BBOX"
+          python -I scripts/extract_stations.py "${{ steps.overture.outputs.release }}" data/overture/stations.parquet "$BBOX"
+
+      - name: 상가정보 업소 테이블
+        run: |
+          mkdir -p out
+          base_ym=$(cut -c1-6 data/raw/sbiz_current/date.txt)
+          python -I scripts/load_sbiz.py data/raw/sbiz_current data/sbiz_current.parquet
+          python -I scripts/build_store_tiles.py data/sbiz_current.parquet 서울특별시 data/overture/buildings.parquet \
+            data/seoul_stores.parquet out/seoul_stores.pmtiles "$base_ym"
+
+      - name: 음식점 타일
+        run: |
+          python -I scripts/build_restaurant_tiles.py data/raw/localdata/seoul.csv data/overture/buildings.parquet \
+            data/seoul_restaurants.parquet out/seoul_restaurants "$(python -c "import json; print(json.load(open('data/raw/manifest.json'))['localdata'])")" \
+            --stores data/seoul_stores.parquet --stations data/overture/stations.parquet \
+            --snapshots "data/raw/sbiz_*1231/seoul.csv" --baeknyeon data/raw/baeknyeon/*.csv
+
+      - name: 이전 결과와 비교
+        run: |
+          python - <<'EOF'
+          import json
+          old = json.load(open("site/data/seoul_restaurants_hist.json"))
+          new = json.load(open("out/seoul_restaurants_hist.json"))
+          print(f"{old['base_date']} {old['total']} -> {new['base_date']} {new['total']}")
+          # 원천 파일이 잘렸거나 형식이 바뀌면 크게 줄어든다. 그럴 때는 배포하지 않는다
+          assert new["total"] >= old["total"] * 0.9, "음식점 수가 10% 넘게 줄었습니다"
+          EOF
+
+      - name: 사이트
+        run: |
+          cp site/data/basemap.pmtiles out/basemap_seoul_overture.pmtiles
+          python -I scripts/build_site.py --manifest data/raw/manifest.json site
+          git status --short site | head -20
+
+      - name: 커밋
+        if: env.PUBLISH == 'true'
+        run: |
+          git add -A site
+          if git diff --cached --quiet; then echo "변경 없음"; exit 0; fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          m=data/raw/manifest.json
+          git commit -q -m "데이터 갱신: 인허가 $(jq -r .localdata $m), 상가정보 $(jq -r .sbiz_current $m), Overture ${{ steps.overture.outputs.release }}"
+          git pull -q --rebase origin main
+          git push -q origin HEAD:main
+
+      - if: env.PUBLISH == 'true'
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: site
+
+      - if: env.PUBLISH != 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: site
+          path: site
+          retention-days: 7
+
+  deploy:
+    needs: build
+    if: github.event_name == 'schedule' || inputs.publish
+    runs-on: ubuntu-24.04
+    concurrency:
+      group: pages
+      cancel-in-progress: false
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

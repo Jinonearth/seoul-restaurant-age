@@ -7,7 +7,12 @@ import sys, zipfile
 src, out = sys.argv[1], sys.argv[2]
 sys.stdout.reconfigure(encoding="utf-8")
 def name(i):
-    return i.filename if i.flag_bits & 0x800 else i.filename.encode("cp437").decode("cp949", "replace")
+    if i.flag_bits & 0x800:
+        return i.filename
+    try:
+        return i.filename.encode("cp437").decode("cp949", "replace")
+    except UnicodeEncodeError:  # 유니코드 경로 확장 필드가 있으면 zipfile이 이미 제대로 풀어 둔다
+        return i.filename
 
 
 def find_seoul(z):
