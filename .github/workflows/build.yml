@@ -62,7 +62,7 @@ jobs:
         id: overture-cache
         with:
           path: data/overture
-          key: overture-${{ steps.overture.outputs.release }}-${{ env.BBOX }}
+          key: overture-${{ steps.overture.outputs.release }}-${{ hashFiles('.github/workflows/build.yml') }}  # 키에 쉼표(BBOX)를 넣을 수 없다
 
       - name: 공공데이터 받기
         run: python -I scripts/fetch_sources.py data
